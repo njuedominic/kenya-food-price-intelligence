@@ -1,21 +1,7 @@
 # Kenya Food Price & Inflation Intelligence Platform
 
-A locally hosted foundation for collecting and analyzing Kenyan food-price,
-agricultural, and inflation data. This repository currently implements **Milestone
-1: engineering foundation and repository scaffolding only**. It does not contain
-source connectors, production data pipelines, a dimensional warehouse, streaming
-applications, or dashboards.
-
-## Principles
-
-- Official observations, derived statistics, and synthetic events must remain
-  distinguishable.
-- Source availability, licensing, schema, and update frequency must be verified
-  before a connector is implemented. No county-level inflation observations or
-  unverified APIs are assumed.
-- Application and infrastructure services run locally in Docker Compose. Public
-  data providers are external sources, not hosting dependencies.
-- Local filesystems hold the lake; PostgreSQL is the planned analytical warehouse.
+A Kenyan food prices and inflation platform for collecting and analyzing Kenyan food-price,
+agricultural, and inflation data. 
 
 ## Requirements
 
@@ -23,8 +9,6 @@ applications, or dashboards.
 - Docker Engine with the Compose plugin (Docker Desktop on macOS/Windows, or
   Docker Engine on Linux).
 - For Windows, use WSL2 and run these commands from the WSL filesystem.
-- About 8 GB of available memory is recommended for the full local stack; reduce
-  concurrent services on smaller machines.
 
 ## Local setup
 
@@ -87,39 +71,10 @@ use `.env` and fail with a clear message if it is missing. See
 - `docs/`: requirements, architecture, ADRs, governance, and runbooks.
 - `tests/`: unit, integration, contract, and quality test boundaries.
 
-## Data governance
 
-Every ingested record is expected to retain `source_system`, `dataset_name`,
-`source_url`, `ingestion_timestamp`, `observation_date`, `pipeline_run_id`,
-`schema_version`, and `record_hash`. Preserve raw source responses in immutable
-Bronze storage; document transformations into Silver and Gold. Do not silently
-drop missing or invalid values: validate, record the reason, and quarantine
-invalid records. Deduplication, units/currency normalization, late data, source
-revisions, and freshness thresholds must be source-aware and auditable.
-Simulated records must be labeled synthetic at creation and never presented as
-official observations. See [data governance](docs/data-dictionary/source-schemas.md).
 
-## Development and delivery
 
-Use GitHub Flow: create a `feature/*`, `fix/*`, `docs/*`, `chore/*`, or `test/*`
-branch; open a pull request to `main`; pass CI; and squash merge. Repository files
-cannot enforce branch protection. Configure required reviews and the CI status
-check in GitHub repository settings. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-GitHub Actions runs tests and static checks, validates Compose configuration,
-and builds Dockerfiles only when real Dockerfiles are added. The release workflow
-is manual validation only. Local deployment is performed by pulling an approved
-release and following the Compose runbook; CI does not deploy to a developer
-machine.
-
-## Current limitations
-
-This scaffold does not verify or implement KNBS, World Bank, FAOSTAT, or county
-data connectors. The PostgreSQL, Airflow, Spark, Grafana, and Kafka Compose
-services provide local infrastructure, not data products. Grafana has no
-project dashboard or provisioned data source yet. Spark is a standalone cluster
-only; Spark Structured Streaming jobs are not included. Validate source access,
-licenses, schemas, resource needs, and image compatibility before production use.
 
 ## License
 
