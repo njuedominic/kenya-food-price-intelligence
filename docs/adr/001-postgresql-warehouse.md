@@ -12,8 +12,10 @@ without introducing a cloud dependency.
 ## Decision
 
 Use PostgreSQL as the planned warehouse and local metadata store. The Compose
-deployment initializes a separate `airflow` metadata database alongside
-`food_intelligence` in the same PostgreSQL instance. Airflow uses PostgreSQL,
+deployment initializes separate `airflow` and `food_intelligence` databases in
+the same PostgreSQL instance. Dedicated non-superuser login roles own and access
+the Airflow metadata and warehouse databases respectively. The bootstrap
+`POSTGRES_USER` remains the administrative account. Airflow uses PostgreSQL,
 not SQLite, with LocalExecutor.
 
 ## Alternatives
@@ -25,7 +27,7 @@ the local-hosting constraint.
 ## Consequences
 
 The shared PostgreSQL server is simple for local development, while distinct
-databases isolate metadata and analytics. They still share host resources,
-failure domain, and backups; production sizing, roles, migrations, retention,
+databases and roles isolate metadata and analytics. They still share host
+resources, failure domain, and backups. Production sizing, migrations, retention,
 and restore procedures require further validation. No warehouse schema or
 migrations are implemented yet.

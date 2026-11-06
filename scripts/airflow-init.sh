@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-airflow db migrate
+if airflow db check-migrations --migration-wait-timeout 1; then
+  echo "Airflow metadata schema is current."
+else
+  airflow db migrate
+fi
 
 if airflow users list --output json | python -c '
 import json

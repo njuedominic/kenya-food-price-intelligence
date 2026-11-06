@@ -2,16 +2,16 @@
 
 Docker Compose runs on one local host. The base Compose file defines PostgreSQL,
 Airflow with LocalExecutor, Spark standalone master/worker, and Grafana. A
-separate Compose file and `streaming` profile add a single-node Kafka KRaft
-broker. Named volumes persist database, Airflow log, Spark checkpoint, Grafana,
-and Kafka state. The repository's local `data/` directory is mounted at the
-same `/opt/platform/data` path in Airflow and Spark.
+separate Compose file adds an opt-in single-node Kafka KRaft broker; the base
+Compose file does not include Kafka. Named volumes persist database, Airflow
+log, Spark checkpoint, Grafana, and Kafka state. The repository's local `data/`
+directory is mounted at the same `/opt/platform/data` path in Airflow and Spark.
 
-PostgreSQL contains a `food_intelligence` database and a separately initialized
-Airflow metadata database. PostgreSQL is not exposed with its default port:
-local access defaults to host port 5433. Airflow UI, Spark master UI, and Grafana
-are exposed only on their documented local ports. Do not bind these development
-services to an untrusted network.
+PostgreSQL contains `food_intelligence` and `airflow` databases with distinct
+owners and non-superuser login roles. Published ports bind to loopback only:
+PostgreSQL 5433, Airflow 8081, Spark master UI 8082, Grafana 3000, and Kafka's
+external listener 9094. Kafka's internal broker port 9092 and controller port
+9093 are not published.
 
 The topology is single-host and has no high availability. Docker resource limits,
 disk capacity, backups, image upgrades, and secret rotation remain operator

@@ -10,9 +10,10 @@ self-hosted.
 
 ## Decision
 
-Use pinned service image tags and Docker Compose. Isolate Kafka in a second
-Compose file and a `streaming` profile. Persist service state in named volumes,
-and use environment variables for local credentials.
+Use pinned service image tags and Docker Compose. Keep optional Kafka in a
+second Compose file, outside the base stack. Persist service state in named
+volumes, bind published ports to localhost, and use environment variables for
+local credentials.
 
 ## Alternatives
 

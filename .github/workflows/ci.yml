@@ -36,4 +36,4 @@ jobs:
       - name: Validate base Compose configuration
         run: docker compose --env-file .env.example config --quiet
       - name: Validate streaming Compose configuration
-        run: docker compose --env-file .env.example -f docker-compose.yml -f docker-compose.streaming.yml --profile streaming config --quiet
+        run: docker compose --env-file .env.example -f docker-compose.yml -f docker-compose.streaming.yml config --quiet
