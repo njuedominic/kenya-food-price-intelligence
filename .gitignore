@@ -26,6 +26,8 @@ reports/**
 !reports/**/
 !reports/**/.gitkeep
 !reports/source_profiling/*.json
+reports/source_profiling/knbs_source_profile_*.json
+reports/source_profiling/faostat_source_profile_*.json
 
 # Local service state
 postgres_data/

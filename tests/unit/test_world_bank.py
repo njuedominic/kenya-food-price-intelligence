@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from email.message import Message
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
@@ -22,6 +23,12 @@ INDICATOR = "FP.CPI.TOTL"
 class JsonResponse(io.BytesIO):
     def __init__(self, value: object) -> None:
         super().__init__(json.dumps(value).encode())
+        self.status = 200
+        self.headers = Message()
+        self.headers["Content-Type"] = "application/json"
+
+    def geturl(self) -> str:
+        return "https://api.worldbank.org/v2/test"
 
 
 def observation(
@@ -96,7 +103,7 @@ def test_fetches_all_pages_and_checks_pagination_metadata() -> None:
         per_page=2,
     )
     with patch(
-        "kenya_food_intelligence.sources.world_bank.urlopen",
+        "kenya_food_intelligence.sources.http.urlopen",
         side_effect=[response(first), response(second)],
     ) as open_url:
         result = client.get_indicator_observations("KEN", INDICATOR, per_page=2)
@@ -114,7 +121,7 @@ def test_fetches_all_pages_and_checks_pagination_metadata() -> None:
 def test_empty_response_with_null_data_is_valid() -> None:
     client = WorldBankClient()
     with patch(
-        "kenya_food_intelligence.sources.world_bank.urlopen",
+        "kenya_food_intelligence.sources.http.urlopen",
         return_value=response(page(None, pages=0, total=0)),
     ):
         result = client.get_indicator_observations("KEN", INDICATOR)
@@ -126,7 +133,7 @@ def test_empty_response_with_null_data_is_valid() -> None:
 def test_null_observations_are_counted_as_missing_not_api_errors() -> None:
     client = WorldBankClient()
     with patch(
-        "kenya_food_intelligence.sources.world_bank.urlopen",
+        "kenya_food_intelligence.sources.http.urlopen",
         side_effect=[
             response(definition()),
             response(
@@ -178,7 +185,7 @@ def test_malformed_observation_responses_raise_meaningful_errors(
 ) -> None:
     client = WorldBankClient(max_retries=0)
     with patch(
-        "kenya_food_intelligence.sources.world_bank.urlopen",
+        "kenya_food_intelligence.sources.http.urlopen",
         return_value=response(payload),
     ):
         with pytest.raises(WorldBankResponseError):
@@ -188,7 +195,7 @@ def test_malformed_observation_responses_raise_meaningful_errors(
 def test_changed_pagination_metadata_is_rejected() -> None:
     client = WorldBankClient()
     with patch(
-        "kenya_food_intelligence.sources.world_bank.urlopen",
+        "kenya_food_intelligence.sources.http.urlopen",
         side_effect=[
             response(
                 page(
@@ -220,10 +227,10 @@ def test_transient_http_error_retries_with_exponential_backoff() -> None:
     )
     with (
         patch(
-            "kenya_food_intelligence.sources.world_bank.urlopen",
+            "kenya_food_intelligence.sources.http.urlopen",
             side_effect=[service_unavailable, response(page([], total=0, pages=0))],
         ) as open_url,
-        patch("kenya_food_intelligence.sources.world_bank.time.sleep") as sleep,
+        patch("kenya_food_intelligence.sources.http.time.sleep") as sleep,
     ):
         result = client.get_indicator_observations("KEN", INDICATOR)
 
@@ -239,10 +246,10 @@ def test_non_retryable_http_error_fails_without_retry() -> None:
     )
     with (
         patch(
-            "kenya_food_intelligence.sources.world_bank.urlopen",
+            "kenya_food_intelligence.sources.http.urlopen",
             side_effect=not_found,
         ) as open_url,
-        patch("kenya_food_intelligence.sources.world_bank.time.sleep") as sleep,
+        patch("kenya_food_intelligence.sources.http.time.sleep") as sleep,
     ):
         with pytest.raises(WorldBankHTTPError, match="HTTP 404"):
             client.get_indicator_observations("KEN", INDICATOR)
@@ -258,10 +265,10 @@ def test_exhausted_transient_http_retries_raise_request_error() -> None:
     )
     with (
         patch(
-            "kenya_food_intelligence.sources.world_bank.urlopen",
+            "kenya_food_intelligence.sources.http.urlopen",
             side_effect=[unavailable, unavailable, unavailable],
         ) as open_url,
-        patch("kenya_food_intelligence.sources.world_bank.time.sleep") as sleep,
+        patch("kenya_food_intelligence.sources.http.time.sleep") as sleep,
     ):
         with pytest.raises(WorldBankRequestError, match="3 attempts"):
             client.get_indicator_observations("KEN", INDICATOR)
@@ -276,13 +283,13 @@ def test_network_failures_are_retried_and_include_configured_timeout() -> None:
     client = WorldBankClient(timeout=4.5, max_retries=1, backoff_factor=0)
     with (
         patch(
-            "kenya_food_intelligence.sources.world_bank.urlopen",
+            "kenya_food_intelligence.sources.http.urlopen",
             side_effect=[
                 URLError("temporary network failure"),
                 response(page([], total=0, pages=0)),
             ],
         ) as open_url,
-        patch("kenya_food_intelligence.sources.world_bank.time.sleep") as sleep,
+        patch("kenya_food_intelligence.sources.http.time.sleep") as sleep,
     ):
         result = client.get_indicator_observations("KEN", INDICATOR)
 
@@ -305,7 +312,7 @@ def test_client_rejects_invalid_retry_and_page_configuration() -> None:
 def test_duplicate_indicator_year_combinations_are_reported() -> None:
     client = WorldBankClient()
     with patch(
-        "kenya_food_intelligence.sources.world_bank.urlopen",
+        "kenya_food_intelligence.sources.http.urlopen",
         side_effect=[
             response(definition()),
             response(

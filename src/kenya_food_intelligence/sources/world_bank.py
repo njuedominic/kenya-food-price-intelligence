@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
-import time
+import ssl
 from dataclasses import dataclass
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+
+from kenya_food_intelligence.sources.http import (
+    HTTPClient,
+    HTTPRequestError,
+    HTTPStatusError,
+)
 
 type JsonObject = dict[str, object]
 
@@ -73,6 +77,13 @@ class WorldBankClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
+        self.http = HTTPClient(
+            timeout=timeout,
+            max_retries=max_retries,
+            backoff_factor=backoff_factor,
+            user_agent="kenya-food-price-intelligence-source-profiler/0.1",
+            ssl_context=ssl.create_default_context(),
+        )
 
     @staticmethod
     def data_url(country_code: str, indicator_code: str, per_page: int) -> str:
@@ -177,43 +188,27 @@ class WorldBankClient:
         return IndicatorObservations(reference_metadata, observations)
 
     def _request_json(self, url: str) -> object:
-        last_error: Exception | None = None
-        for attempt in range(self.max_retries + 1):
-            request = Request(
-                url,
-                headers={
-                    "Accept": "application/json",
-                    "User-Agent": "kenya-food-price-intelligence-source-profiler/0.1",
-                },
-            )
-            try:
-                with urlopen(request, timeout=self.timeout) as response:
-                    return json.loads(response.read())
-            except HTTPError as error:
-                if error.code not in {408, 429} and error.code < 500:
-                    raise WorldBankHTTPError(
-                        f"World Bank API returned HTTP {error.code} for {url}"
-                    ) from error
-                last_error = error
-            except (URLError, TimeoutError, OSError) as error:
-                last_error = error
-            except (json.JSONDecodeError, UnicodeDecodeError) as error:
-                raise WorldBankResponseError(
-                    f"World Bank API returned invalid JSON for {url}"
+        try:
+            response = self.http.get(url, headers={"Accept": "application/json"})
+        except HTTPStatusError as error:
+            raise WorldBankHTTPError(
+                f"World Bank API returned HTTP {error.status} for {url}"
+            ) from error
+        except HTTPRequestError as error:
+            if error.status is not None:
+                raise WorldBankRequestError(
+                    f"World Bank API request failed after {error.attempts} attempts "
+                    f"with HTTP {error.status}: {url}"
                 ) from error
-
-            if attempt < self.max_retries:
-                time.sleep(self.backoff_factor * (2**attempt))
-
-        if isinstance(last_error, HTTPError):
             raise WorldBankRequestError(
-                f"World Bank API request failed after {self.max_retries + 1} attempts "
-                f"with HTTP {last_error.code}: {url}"
-            ) from last_error
-        raise WorldBankRequestError(
-            f"World Bank API request failed after {self.max_retries + 1} "
-            f"attempts: {url}"
-        ) from last_error
+                f"World Bank API request failed after {error.attempts} attempts: {url}"
+            ) from error
+        try:
+            return json.loads(response.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise WorldBankResponseError(
+                f"World Bank API returned invalid JSON for {url}"
+            ) from error
 
     @staticmethod
     def _parse_observation_page(

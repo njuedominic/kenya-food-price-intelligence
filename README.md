@@ -81,6 +81,27 @@ use `.env` and fail with a clear message if it is missing. See
 - `docs/`: requirements, architecture, ADRs, governance, and runbooks.
 - `tests/`: unit, integration, contract, and quality test boundaries.
 
+## World Bank source profiling
+
+The Milestone 2 profiling utility fetches Kenya's `FP.CPI.TOTL` and
+`FP.CPI.TOTL.ZG` series from the World Bank Indicators API. It validates the
+two-element JSON envelope and every paginated observation, then writes aggregate
+statistics and observed field/type summaries (not raw observations) to
+`reports/source_profiling/`.
+
+Run it from the repository root with:
+
+```sh
+uv run python scripts/profile_world_bank.py
+```
+
+HTTP settings can be overridden with `--timeout`, `--max-retries`,
+`--backoff-factor`, and `--per-page`; use `--output-dir` to choose another report
+directory. The default timeout is 20 seconds, with three retries and exponential
+backoff beginning at 0.5 seconds. The API's indicator metadata reports source
+attribution; confirm the underlying source's specific license before reuse.
+These profiles are source inspection only, not a production ingestion workflow.
+
 ## Infrastructure notes
 
 Service image tags are pinned: PostgreSQL 16.6 Alpine, Airflow 2.10.5 on Python
