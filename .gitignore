@@ -25,6 +25,7 @@ logs/*
 reports/**
 !reports/**/
 !reports/**/.gitkeep
+!reports/source_profiling/*.json
 
 # Local service state
 postgres_data/
