@@ -14,7 +14,11 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3 :: Only",
 ]
-dependencies = []
+dependencies = [
+    "pdfplumber>=0.11,<1",
+    "pypdf>=5,<7",
+    "truststore>=0.10,<1",
+]
 
 [dependency-groups]
 dev = [
