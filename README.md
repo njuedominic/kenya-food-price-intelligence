@@ -81,6 +81,87 @@ use `.env` and fail with a clear message if it is missing. See
 - `docs/`: requirements, architecture, ADRs, governance, and runbooks.
 - `tests/`: unit, integration, contract, and quality test boundaries.
 
+## Source profiling
+
+The Milestone 2 source profilers inspect official source metadata and bounded
+samples; they are not production ingestion workflows. Install the project and
+its profiling dependencies from the repository root with:
+
+```sh
+uv sync --locked --group dev
+```
+
+Each command needs network access to its documented source. Reports are written
+under `reports/source_profiling/`; downloaded PDFs and archives remain under
+Git-ignored `data/landing/` directories.
+
+### World Bank national CPI
+
+The Milestone 2 profiling utility fetches Kenya's `FP.CPI.TOTL` and
+`FP.CPI.TOTL.ZG` series from the World Bank Indicators API. It validates the
+two-element JSON envelope and every paginated observation, then writes aggregate
+statistics and observed field/type summaries (not raw observations) to
+`reports/source_profiling/`.
+
+Run it from the repository root with:
+
+```sh
+uv run python scripts/profile_world_bank.py
+```
+
+HTTP settings can be overridden with `--timeout`, `--max-retries`,
+`--backoff-factor`, and `--per-page`; use `--output-dir` to choose another report
+directory. The default timeout is 20 seconds, with three retries and exponential
+backoff beginning at 0.5 seconds. The API's indicator metadata reports source
+attribution; confirm the underlying source's specific license before reuse.
+These profiles are source inspection only, not a production ingestion workflow.
+
+### KNBS monthly CPI and national retail prices
+
+Discover and profile the default August–October 2026 releases from the official
+KNBS publication listing:
+
+```sh
+uv run python scripts/profile_knbs.py
+```
+
+The script uses the project's `pdfplumber`, `pypdf`, and shared HTTP client. It
+records PDF metadata, source text, extracted table columns, normalized sample
+rows, and alignment/data-quality checks. Review the source PDF whenever a
+layout or validation check changes; no OCR or production ETL is implemented.
+Use `--help` to select months, tune HTTP retries, or change local download and
+report directories.
+
+### FAOSTAT producer prices
+
+Profile Kenya rows in the official Producer Prices domain ZIP:
+
+```sh
+uv run python scripts/profile_faostat.py
+```
+
+The download is streamed with a size bound and read from the ZIP without
+extracting the large CSV to disk. The profiler distinguishes annual and
+monthly records, measures historical gaps per item/element/unit/frequency
+series, and preserves statistical flags. Use `--help` for timeout, retry, and
+local directory options.
+
+### World Bank subnational market-price feasibility
+
+Profile the Kenya-only Real Time Food Prices catalog files and emit the bounded
+market-data feasibility report:
+
+```sh
+uv run python scripts/profile_subnational_prices.py
+```
+
+Only the Kenya market file and its small same-version model and ticker metadata
+archives are downloaded; the global archive is not fetched. The output
+distinguishes model estimates from direct observations and does not infer a
+county mapping. WFP and NDMA reconnaissance evidence is a dated snapshot; the
+command does not download WFP data or NDMA bulletins. Use `--help` to configure
+timeouts, retries, and local directories.
+
 ## Infrastructure notes
 
 Service image tags are pinned: PostgreSQL 16.6 Alpine, Airflow 2.10.5 on Python

@@ -1,0 +1,153 @@
+{
+  "report_name": "World Bank Kenya CPI source profile",
+  "generated_at": "2026-11-06T08:16:39.571448+00:00",
+  "profiling_outcome": "success",
+  "indicators": [
+    {
+      "source_system": "World Bank Indicators API",
+      "country_code": "KEN",
+      "indicator_code": "FP.CPI.TOTL",
+      "indicator_description": "Consumer price index (2010 = 100)",
+      "source_url": "https://api.worldbank.org/v2/country/KEN/indicator/FP.CPI.TOTL?format=json&per_page=100&page=1",
+      "indicator_metadata_url": "https://api.worldbank.org/v2/indicator/FP.CPI.TOTL?format=json",
+      "source_id": "2",
+      "source_name": "World Development Indicators",
+      "source_note": "Index of the prices of consumption goods and services, as compared to a certain reference period (2010=100).",
+      "source_organization": "International Financial Statistics database, International Monetary Fund (IMF)",
+      "retrieved_at": "2026-11-06T08:16:38.928944+00:00",
+      "license_attribution": {
+        "license": "The World Bank states CC BY 4.0 is its default for datasets it produces and distributes as open data; this API response does not specify a license for this indicator. Verify the underlying source-specific terms before reuse or redistribution.",
+        "license_url": "https://datacatalog.worldbank.org/public-licenses",
+        "attribution": "World Bank; World Development Indicators; source organization: International Financial Statistics database, International Monetary Fund (IMF)"
+      },
+      "profiling_outcome": "success",
+      "api_pagination": {
+        "page_count": 1,
+        "per_page": 100,
+        "api_total_observations": 66
+      },
+      "statistics": {
+        "total_observations": 66,
+        "non_null_observations": 66,
+        "missing_values": 0,
+        "minimum_year": 1960,
+        "maximum_year": 2025,
+        "duplicate_indicator_year_combinations": {
+          "count": 0,
+          "duplicates": []
+        }
+      },
+      "observed_fields": {
+        "country": [
+          "object"
+        ],
+        "country.id": [
+          "string"
+        ],
+        "country.value": [
+          "string"
+        ],
+        "countryiso3code": [
+          "string"
+        ],
+        "date": [
+          "string"
+        ],
+        "decimal": [
+          "integer"
+        ],
+        "indicator": [
+          "object"
+        ],
+        "indicator.id": [
+          "string"
+        ],
+        "indicator.value": [
+          "string"
+        ],
+        "obs_status": [
+          "string"
+        ],
+        "unit": [
+          "string"
+        ],
+        "value": [
+          "number"
+        ]
+      }
+    },
+    {
+      "source_system": "World Bank Indicators API",
+      "country_code": "KEN",
+      "indicator_code": "FP.CPI.TOTL.ZG",
+      "indicator_description": "Inflation, consumer prices (annual %)",
+      "source_url": "https://api.worldbank.org/v2/country/KEN/indicator/FP.CPI.TOTL.ZG?format=json&per_page=100&page=1",
+      "indicator_metadata_url": "https://api.worldbank.org/v2/indicator/FP.CPI.TOTL.ZG?format=json",
+      "source_id": "2",
+      "source_name": "World Development Indicators",
+      "source_note": "Inflation as measured by the consumer price index reflects the annual percentage change in the cost to the average consumer of acquiring a basket of goods and services that may be fixed or changed at specified intervals, such as yearly.",
+      "source_organization": "International Financial Statistics database, International Monetary Fund (IMF)",
+      "retrieved_at": "2026-11-06T08:16:39.571399+00:00",
+      "license_attribution": {
+        "license": "The World Bank states CC BY 4.0 is its default for datasets it produces and distributes as open data; this API response does not specify a license for this indicator. Verify the underlying source-specific terms before reuse or redistribution.",
+        "license_url": "https://datacatalog.worldbank.org/public-licenses",
+        "attribution": "World Bank; World Development Indicators; source organization: International Financial Statistics database, International Monetary Fund (IMF)"
+      },
+      "profiling_outcome": "success",
+      "api_pagination": {
+        "page_count": 1,
+        "per_page": 100,
+        "api_total_observations": 66
+      },
+      "statistics": {
+        "total_observations": 66,
+        "non_null_observations": 66,
+        "missing_values": 0,
+        "minimum_year": 1960,
+        "maximum_year": 2025,
+        "duplicate_indicator_year_combinations": {
+          "count": 0,
+          "duplicates": []
+        }
+      },
+      "observed_fields": {
+        "country": [
+          "object"
+        ],
+        "country.id": [
+          "string"
+        ],
+        "country.value": [
+          "string"
+        ],
+        "countryiso3code": [
+          "string"
+        ],
+        "date": [
+          "string"
+        ],
+        "decimal": [
+          "integer"
+        ],
+        "indicator": [
+          "object"
+        ],
+        "indicator.id": [
+          "string"
+        ],
+        "indicator.value": [
+          "string"
+        ],
+        "obs_status": [
+          "string"
+        ],
+        "unit": [
+          "string"
+        ],
+        "value": [
+          "number"
+        ]
+      }
+    }
+  ]
+}
