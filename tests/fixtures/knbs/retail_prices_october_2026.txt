@@ -1,0 +1,6 @@
+10 | Page
+Table 3: National Average Retail Prices of Selected Commodities
+Commodity Name Quantity Unit of Measure Average Price October 2025 Average Price September 2026 Average Price October 2026 % Change over last month % Change over last year
+Sugar 1 Kg 184.35 165.79 163.84 -1.2 -11.1
+Beans 1 Kg 180.99 182.76 185.75 1.6 2.6
+Gas/LPG 13 Kg 3,133.49 3,419.24 3,429.61 0.3 9.5

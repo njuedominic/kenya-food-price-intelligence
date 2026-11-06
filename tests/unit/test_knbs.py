@@ -104,10 +104,15 @@ def make_pdf(page_texts: list[str]) -> bytes:
             {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_reference})}
         )
         content = DecodedStreamObject()
-        escaped_text = (
-            text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        text_lines = []
+        for line in text.splitlines():
+            escaped_line = (
+                line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+            )
+            text_lines.append(f"({escaped_line}) Tj T*")
+        content.set_data(
+            f"BT /F1 12 Tf 14 TL 50 700 Td {' '.join(text_lines)} ET".encode()
         )
-        content.set_data(f"BT /F1 12 Tf 50 700 Td ({escaped_text}) Tj ET".encode())
         page[NameObject("/Contents")] = writer._add_object(content)
     output = BytesIO()
     writer.write(output)
@@ -424,6 +429,57 @@ def test_missing_expected_topic_is_flagged(tmp_path: Path) -> None:
         "national_average_retail_prices"
         in profile["data_quality_checks"]["missing_expected_topics"]
     )
+
+
+def test_manually_reviewed_october_retail_table_fixture(tmp_path: Path) -> None:
+    fixture_path = (
+        Path(__file__).parents[1]
+        / "fixtures"
+        / "knbs"
+        / "retail_prices_october_2026.txt"
+    )
+    page_text = fixture_path.read_text(encoding="utf-8")
+    path = tmp_path / "controlled.pdf"
+    path.write_bytes(make_pdf([""] * 9 + [page_text]))
+    profile = profile_report(downloaded_report(path))
+
+    retail_table = next(
+        table for table in profile["tables"] if table["candidate_price_table"]
+    )
+    assert retail_table["page"] == 10
+    assert retail_table["extraction_method"] == (
+        "pdfplumber text lines; commodity and trailing numeric fields aligned"
+    )
+    assert retail_table["column_headers"] == [
+        "Commodity Name",
+        "Quantity",
+        "Unit of Measure",
+        "Average Price October 2025",
+        "Average Price September 2026",
+        "Average Price October 2026",
+        "% Change over last month",
+        "% Change over last year",
+    ]
+    rows = {
+        row["normalized_values"]["commodity_name"]: row
+        for row in retail_table["normalized_sample_rows"]
+    }
+    assert rows["Sugar"]["source_cells"] == [
+        "Sugar",
+        "1",
+        "Kg",
+        "184.35",
+        "165.79",
+        "163.84",
+        "-1.2",
+        "-11.1",
+    ]
+    assert (
+        rows["Gas/LPG"]["normalized_values"]["average_price_current_month_kes"]
+        == 3429.61
+    )
+    assert retail_table["misaligned_rows"] == []
+    assert retail_table["table_extraction_reliable"] is True
 
 
 def test_malformed_pdf_raises_meaningful_error(tmp_path: Path) -> None:
