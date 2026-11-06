@@ -1,8 +1,8 @@
 # Kenya Food Price & Inflation Intelligence Platform
 
 A locally hosted foundation for collecting and analyzing Kenyan food-price,
-agricultural, and inflation data. It includes a standalone World Bank CPI
-Bronze-ingestion command; broader source connectors, Silver/Gold ETL, streaming
+agricultural, and inflation data. It includes standalone World Bank CPI and
+KNBS monthly CPI PDF Bronze-ingestion commands; Silver/Gold ETL, streaming
 applications, warehouse models, and dashboards are not included.
 
 ## Requirements
@@ -208,6 +208,49 @@ pages. All pages are buffered before publication, so these limits bound raw
 payload bytes, not total Python process memory or decoded-object overhead. The
 manifest and run-record formats, recovery behavior, locking, and filesystem
 limitations are documented in
+[the Bronze ingestion contract](docs/data-dictionary/bronze-ingestion.md).
+
+## KNBS monthly CPI Bronze ingestion
+
+The M3.2 command discovers one monthly CPI publication from the official
+[KNBS CPI and inflation listing](https://www.knbs.or.ke/cpi-and-inflation-rates/),
+streams the original PDF bytes, validates the PDF structure, and publishes an
+immutable local Bronze snapshot. It does not extract statistical tables or
+require Docker:
+
+```sh
+uv run python scripts/ingest_knbs.py --help
+uv run python scripts/ingest_knbs.py --month 2026-10
+```
+
+Only one bounded reference month is accepted per invocation. Use separate
+commands for backfills; malformed months such as `2026-13` are rejected. The
+command defaults to a 25-second request timeout, two retries with exponential
+backoff, and a 40,000,000-byte PDF limit. The official listing response is
+limited to 5,000,000 bytes. It rejects missing or ambiguous listing matches and
+does not guess a PDF URL. A listing with multiple distinct PDFs for one month
+fails for operator review rather than selecting a filename or version
+arbitrarily.
+
+Snapshots are stored at
+`data/bronze/knbs_cpi_monthly/publication=<YYYY-MM>/snapshots/<snapshot-id>/`,
+with `report.pdf`, a canonical content descriptor, and a manifest. Separate
+append-only run records are stored at
+`data/manifests/knbs_cpi_monthly/runs/<run-id>.json`. Identical bytes for the
+same publication reuse the existing snapshot (`unchanged`); revised bytes
+create a new snapshot without replacing prior versions. A changed source URL
+or filename with identical bytes reuses the content snapshot; the current URL
+and filename are recorded in that invocation's run record. Failed acquisition
+or PDF validation creates a failed run record and no success snapshot.
+Publication dates are included only when verified from official listing
+metadata. PDFs are preserved whole; Bronze does not claim county-level
+inflation coverage or perform extraction/analysis.
+Existing schema-version-1 KNBS snapshots are retained unchanged; the first
+post-upgrade ingestion can create a version-2 snapshot rather than migrating
+their filename-dependent IDs.
+
+The full identity, validation, attribution, recovery, and filesystem limits are
+specified in
 [the Bronze ingestion contract](docs/data-dictionary/bronze-ingestion.md).
 
 ## Infrastructure notes

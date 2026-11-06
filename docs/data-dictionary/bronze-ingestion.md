@@ -161,9 +161,156 @@ snapshot can be present even if the subsequent run-record write fails; in that
 case the CLI surfaces a storage error and operators should inspect both the
 snapshot and run-record directory before retrying.
 
+## KNBS monthly CPI PDF contract
+
+### Source discovery and bounded acquisition
+
+The M3.2 command reads the official KNBS CPI listing at
+`https://www.knbs.or.ke/cpi-and-inflation-rates/` and accepts exactly one
+requested reference month per invocation:
+
+```sh
+uv run python scripts/ingest_knbs.py --month 2026-10
+```
+
+Months must use `YYYY-MM` with a valid calendar month. The discovery client
+rejects an empty or duplicate month list and caps a discovery request at 12
+months; this CLI deliberately does not implement range backfills. A missing
+listing match or more than one distinct matching official PDF is a failure.
+Ambiguous candidate URLs are included in the error for manual review; no
+filename-based or newest-looking-version preference is applied, and no URL is
+constructed from a date. A publication not yet listed produces a failed run
+record and no successful snapshot.
+
+The existing HTTP transport provides bounded timeouts and exponential retries.
+Defaults are a 25-second timeout, two retries (three attempts maximum), and a
+0.5-second backoff factor. The listing response is limited to 5,000,000 bytes;
+the streamed PDF is limited to 40,000,000 bytes by default, configurable with
+`--max-pdf-bytes`. The client enforces the limit while streaming and rejects a
+declared or observed oversize response. The standard-library redirect handler
+limits redirects to ten; final listing and PDF URLs must remain on an official
+KNBS host. A 403 is reported as an error and is not bypassed. The PDF content
+type must be `application/pdf` or `application/octet-stream`; the latter is
+accepted only together with the PDF signature. Acquisition uses temporary
+system storage outside published snapshot directories. Failed temporary
+downloads are removed by the HTTP client; a process interruption cannot
+publish a snapshot, though the operating system may retain an abandoned
+temporary file until its normal cleanup.
+
+### PDF integrity and identity validation
+
+The PDF is saved byte-for-byte, without rewriting metadata, compression, pages,
+or embedded content. SHA-256 is computed over the downloaded bytes, then
+verified again while copying them into the same-filesystem snapshot staging
+directory. A snapshot is not published unless HTTP status is 200, the response
+is nonempty and within the configured limit, the content type and `%PDF-`
+signature are appropriate, a trailing `%%EOF` marker is present, and `pypdf`
+can read a nonempty document with at least one page. No page-count constant is
+assumed. The parser is used only for structural validation and non-mutating
+cover/reference-period text checks; it does not execute active PDF content or
+extract statistical tables. Nonfatal parser warnings alone do not reject a
+document. A clearly mismatching cover period fails validation. If the report
+period or title cannot be verified from source listing/PDF text, the manifest
+marks it `unverified`; a publication date is recorded only when official page
+metadata provides a parseable date and its basis.
+
+### Snapshot identity, layout, and manifest
+
+The publication identity is the statistical release month, for example
+`2026-10`. It is independent of the snapshot identity, which identifies the
+exact raw PDF version. Binary descriptor schema version 2 separates identity
+from filename provenance:
+
+```json
+{
+  "descriptor_schema_version": 2,
+  "identity": {
+    "source_id": "knbs_cpi_monthly",
+    "publication_identity": "2026-10",
+    "sha256": "<raw PDF SHA-256>",
+    "size_bytes": 12345
+  },
+  "provenance": {"filename": "report.pdf"}
+}
+```
+
+The snapshot ID is `sha256-` plus the SHA-256 of the canonical `identity`
+object. A renamed file with the same bytes and publication identity therefore
+reuses the existing snapshot; its original filename remains in the immutable
+descriptor and manifest, and the newly discovered URL remains in the new run
+record. Run IDs, filenames, retrieval timestamps, source URLs, and publication
+dates do not affect the content-derived identity. With the default output root,
+storage is:
+
+```text
+data/
+├── bronze/knbs_cpi_monthly/publication=2026-10/snapshots/<snapshot-id>/
+│   ├── descriptor.json
+│   ├── manifest.json
+│   └── report.pdf
+└── manifests/knbs_cpi_monthly/
+    ├── locks/publication=2026-10.lock
+    └── runs/<run-id>.json
+```
+
+The immutable manifest uses schema version 1 and includes:
+
+- **Identity:** source ID, publication identity/reference month, and snapshot ID.
+- **Source:** official listing URL, discovered PDF URL, optional report page,
+  source title, verified publication date and its evidence, and KNBS attribution.
+- **File:** original filename, response content type, PDF size, SHA-256, and
+  structurally verified page count.
+- **Validation:** HTTP status, content type/signature, EOF marker, readable PDF
+  structure, page count, and verified or explicitly unverified period/title.
+- **Integrity:** the content-derived snapshot digest.
+- The UTC time the snapshot was first published.
+
+Schema version 2 changes only new binary descriptor identity semantics.
+Previously published M3.2 schema-version-1 descriptors and snapshot directories
+are not rewritten or deleted. Their historical IDs included the filename; an
+ingestion after upgrade can consequently publish a schema-version-2 snapshot
+for matching bytes rather than automatically migrating or relinking the old
+snapshot. World Bank descriptors and snapshot IDs are unchanged.
+
+The first successful manifest records the discovered URL. If the listing later
+uses a different URL for identical bytes and the same publication identity,
+the existing snapshot and manifest are reused unchanged. The new discovered URL
+is recorded in that run's record rather than mutating immutable provenance.
+
+### Run records, idempotency, and recovery
+
+Each invocation writes an atomic JSON run record to
+`data/manifests/knbs_cpi_monthly/runs/<uuid-hex>.json`. Schema version 1
+records the run ID and timestamps, requested month, discovered source URL and
+filename, retrieval time, outcome, snapshot ID, checksum, size, page count,
+validation results, and bounded failure category/message where applicable. It
+contains no PDF bytes or credentials.
+
+- `created`: a new complete, verified snapshot was published.
+- `unchanged`: the same publication identity and PDF bytes already exist, and
+  the stored descriptor, manifest, and payload checksum passed verification.
+- `failed`: discovery, download, PDF validation, existing-snapshot integrity,
+  or publication failed. A failed run creates no new successful snapshot.
+
+Changed bytes for an existing publication month create a new content-addressed
+snapshot; prior snapshots are retained. Existing corruption is reported as an
+integrity failure and is not overwritten. Each month has a cooperating-writer
+advisory `fcntl.flock` lock. Downloads remain outside published snapshot
+directories; the storage layer copies and hashes into a `.staging-` directory
+under the final snapshots parent, writes and verifies the manifest, then
+atomically renames the complete directory. Identical concurrent ingestions
+converge on one snapshot; different revisions remain separate. As for World
+Bank storage, non-cooperating writers and filesystem/hardware behavior remain
+outside the advisory-lock and `fsync` guarantees.
+
+This command preserves whole source documents only. KNBS attribution is kept in
+the manifest, but the project does not assert that a PDF is licensed for
+redistribution; confirm current KNBS terms before sharing stored copies. No
+county-level inflation coverage or estimates are produced.
+
 ## Non-goals and limitations
 
-- No KNBS, FAOSTAT, RTFP, WFP, or NDMA ingestion.
+- No FAOSTAT, RTFP, WFP, or NDMA Bronze ingestion.
 - No transformation to analytical rows, Parquet, Silver, or warehouse tables.
 - No Airflow, Spark, Kafka, Docker, cloud storage, or database dependency.
 - No automatic deletion or overwrite policy for snapshots.
