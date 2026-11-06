@@ -1,9 +1,9 @@
 # Kenya Food Price & Inflation Intelligence Platform
 
 A locally hosted foundation for collecting and analyzing Kenyan food-price,
-agricultural, and inflation data. This repository implements the engineering
-foundation only; source connectors, ETL, streaming applications, warehouse
-models, and dashboards are not included.
+agricultural, and inflation data. It includes a standalone World Bank CPI
+Bronze-ingestion command; broader source connectors, Silver/Gold ETL, streaming
+applications, warehouse models, and dashboards are not included.
 
 ## Requirements
 
@@ -161,6 +161,54 @@ distinguishes model estimates from direct observations and does not infer a
 county mapping. WFP and NDMA reconnaissance evidence is a dated snapshot; the
 command does not download WFP data or NDMA bulletins. Use `--help` to configure
 timeouts, retries, and local directories.
+
+## World Bank Bronze ingestion
+
+The M3.1 command preserves the World Bank Indicators API response bytes as an
+immutable local Bronze snapshot. It does not normalize observations, convert
+values, or require Docker. Python 3.12 and the repository's locked `uv`
+environment are required:
+
+```sh
+uv sync --locked --group dev
+uv run python scripts/ingest_world_bank.py --help
+uv run python scripts/ingest_world_bank.py --indicator FP.CPI.TOTL
+uv run python scripts/ingest_world_bank.py --indicator FP.CPI.TOTL.ZG
+```
+
+The CLI accepts only those two Kenya CPI indicators. `--timeout`,
+`--max-retries`, `--backoff-factor`, and `--per-page` configure the API
+requests; `--output-root` defaults to `data/`. Resource safeguards default to
+100 pages, 5 MiB per response, and 25 MiB total raw response bytes. Override them
+with `--max-pages`, `--max-page-bytes`, and `--max-total-bytes`; the values must
+be positive integers, and the total limit cannot be below the per-page limit.
+
+Snapshots are stored at
+`data/bronze/world_bank/indicator=<indicator>/snapshots/<snapshot-id>/`.
+Each directory contains the exact `page-NNNN.json` response bytes, a canonical
+content descriptor, and a snapshot manifest. Append-only per-run records are
+stored under `data/manifests/world_bank/runs/`; all runtime data remains
+Git-ignored. Inspect a snapshot manifest with:
+
+```sh
+snapshot_id="sha256-<64-hex-digest>"
+python -m json.tool \
+  "data/bronze/world_bank/indicator=FP.CPI.TOTL/snapshots/$snapshot_id/manifest.json"
+```
+
+`created` means a new complete snapshot was atomically published; `unchanged`
+means matching bytes were found and the existing snapshot passed integrity
+verification; `failed` means retrieval or validation failed and a failure run
+record was written where storage remained available. Rerunning the same
+indicator and parameters is safe: identical raw page bytes reuse the same
+snapshot ID, while revised bytes create another immutable snapshot. The
+ingestion rejects excessive page counts, oversized responses, and aggregate
+payloads beyond the configured limits; it never truncates or publishes partial
+pages. All pages are buffered before publication, so these limits bound raw
+payload bytes, not total Python process memory or decoded-object overhead. The
+manifest and run-record formats, recovery behavior, locking, and filesystem
+limitations are documented in
+[the Bronze ingestion contract](docs/data-dictionary/bronze-ingestion.md).
 
 ## Infrastructure notes
 
