@@ -1,9 +1,11 @@
 # Source schemas and provenance
 
 No upstream schema is asserted until its source, license, access method, and
-current schema have been inspected and recorded. Candidate providers are KNBS,
-World Bank Open Data, FAOSTAT, and a verified Kenya county-level source if one
-is accessible. Do not infer county inflation observations.
+current schema have been inspected and recorded. KNBS, World Bank Open Data,
+FAOSTAT, and the World Bank RTFP market-level dataset have been investigated.
+The RTFP study did not establish a validated county-level crosswalk; do not
+infer county inflation or food-price observations from national aggregates or
+ambiguous market labels.
 
 Every observation should preserve:
 
@@ -22,7 +24,27 @@ Record units, currency, geography, license, retrieval parameters, and source
 revision metadata where applicable. Keep official observations, derived
 statistics, and synthetic events explicitly classified.
 
-## World Bank Indicators API: profiled contract
+## Source catalog and decisions
+
+The decisions below concern source suitability for the next ingestion-design
+stage, not an assertion that any production pipeline is implemented or
+production-ready. Keep these measurement concepts separate: national CPI
+indices/rates, national consumer retail prices, producer prices, and modeled
+market-price estimates.
+
+| Source | Measurement and granularity | Geographic level | Decision | License and principal control |
+|---|---|---|---|---|
+| World Bank Indicators (`FP.CPI.TOTL`, `FP.CPI.TOTL.ZG`) | National CPI index and annual percentage change; annual | Kenya (national) | **Approved** | API does not provide an explicit license; verify underlying IMF/source terms before redistribution. Validate pagination and preserve nulls. |
+| KNBS monthly CPI publications | National CPI rates/index measures and selected retail prices; monthly | Kenya (national) | **Approved with PDF extraction validation controls** | No explicit reuse license identified; obtain permission before redistribution. Validate table titles, page text, alignment, dates, numeric values, and duplicates for every release. |
+| FAOSTAT Producer Prices (`PP`, dataset `47c17894-8ca1-4bd0-ba4d-6078e919e9b1`) | Producer price per tonne / producer price index; annual and sparse monthly | Kenya (national producer-price area) | **Approved with historical-coverage and statistical-flag controls** | Catalog lists CC BY 4.0, subject to FAO terms and third-party restrictions. Retain flags and source revisions; do not fill annual/monthly gaps. |
+| World Bank RTFP (`KEN_2021_RTFP_v02_M`) | Modeled monthly market food-price estimates | Market locations, with unresolved admin labels | **Restricted market-level pilot** | No explicit reuse license observed in the catalog metadata. Keep estimate labels, model/coverage metadata, units, and revision checksums; no county aggregation without a validated crosswalk. |
+| WFP Food Prices via HDX/HAPI | Candidate market-level price observations; mainly monthly, weekly release cadence | Market / admin names and p-codes | **Deferred from production** | HDX declares CC BY-IGO, but Kenya CSV access returned HTTP 202 with an empty body in this environment. Actual Kenya schema, coverage, flags, and observation status remain unvalidated. |
+| NDMA County Drought Bulletins | Narrative and charted county-average retail prices; monthly bulletin | County aggregate, not named markets | **Deferred from production** | Bulletin states © NDMA, All Rights Reserved. One report and month were inspected; no open reuse license or reliable recurring structured feed was established. |
+
+Source profiles and tests establish feasibility evidence only. They do not
+implement ingestion, analytical transformations, or production quality gates.
+
+## World Bank national CPI: profiled contract
 
 The profiling utility currently requests Kenya (`KEN`) at:
 
@@ -72,7 +94,7 @@ include source and definition URLs, retrieved time, attribution/license note,
 pagination metadata, observation/missing-value/year/duplicate statistics, and
 the field/type union observed across all response pages.
 
-## KNBS monthly CPI publications: profiled contract
+## KNBS national CPI and retail prices: profiled contract
 
 The Kenya National Bureau of Statistics (KNBS) CPI and inflation publication
 listing is the discovery source:
@@ -121,6 +143,12 @@ October 2026 row for sugar reports quantity `1`, unit `Kg`, prior-year price
 `184.35`, prior-month price `165.79`, current-month price `163.84`, monthly
 change `-1.2`, and annual change `-11.1`. These values are source text parsed
 from the downloaded PDF, not county observations.
+
+The regression suite includes a small manually reviewed October Table 3 text
+fixture and places it on page 10 of a controlled PDF. The test runs the actual
+`pdfplumber` text extractor and checks parsed cells, numeric alignment, and the
+page location. It is an extraction regression fixture, not a copy of the
+official PDF; production releases still require visual/source-PDF validation.
 
 ### Proposed normalized datasets and source mapping
 
@@ -199,12 +227,11 @@ and fail or quarantine records when alignment is uncertain. Table 2 is not
 suitable for row-based ingestion without a separately verified extraction
 method.
 
-The sanitized aggregate profile was generated at
-`reports/source_profiling/knbs_source_profile_20261106T091937Z.json`. Downloaded
-PDFs and generated profiles are local profiling artifacts, not committed raw
-data or warehouse outputs.
+The sanitized aggregate profile is written as a timestamped JSON file under
+`reports/source_profiling/`. Downloaded PDFs and generated profiles are local
+profiling artifacts, not committed raw data or warehouse outputs.
 
-## FAOSTAT Producer Prices: profiled contract
+## FAOSTAT producer prices: profiled contract
 
 The profiled domain is **Producer Prices** (`PP`), dataset identifier
 `47c17894-8ca1-4bd0-ba4d-6078e919e9b1`.
@@ -381,5 +408,171 @@ The implementation uses only Python’s standard CSV/ZIP/HTTP libraries and the
 project’s existing `truststore`/shared HTTP support; no additional package,
 Spark, Airflow, or Kafka dependency is required.
 
-The sanitized report for this profile is
-`reports/source_profiling/faostat_source_profile_20261106T100338Z.json`.
+The sanitized report is written as a timestamped JSON file under
+`reports/source_profiling/`; it contains the Kenya-specific profile rather than
+the downloaded global domain file.
+
+## Kenya subnational market-price feasibility
+
+This is a source-feasibility assessment, not an ingestion contract or evidence
+of official county inflation. It compares World Bank model estimates, WFP
+market-price source metadata, and one NDMA county bulletin. Keep their distinct
+methods, update cycles, units, and geographic aggregation separate.
+
+### Primary: World Bank Real Time Food Prices
+
+- Kenya catalog: <https://microdata.worldbank.org/catalog/6167>
+- Catalog file listing: <https://microdata.worldbank.org/api/downloads/KEN_2021_RTFP_v02_M/files?type=data>
+- Table metadata and data dictionary:
+  <https://microdata.worldbank.org/api/tables/info/fcv/wld_2021_rtfp_v02_m?data_dictionary=true>
+- Dataset: `Monthly food price estimates by product and market`; author Bo
+  Pieter Johannes Andrée, World Bank Development Data Group.
+- The latest profiled Kenya archives were version `2026-11-02`, retrieved
+  2026-11-06. Only the Kenya market-data ZIP and its small model-details and
+  ticker-information ZIPs were downloaded. Archives are integrity-checked and
+  inspected in place without extracting files.
+- The catalog reports 233 markets and dates from January 2007 through
+  November 2026. The downloaded wide table contained 55,926 market-month rows,
+  234 distinct `geo_id` values and 239 monthly dates from `2007-01-01` through
+  `2026-11-01`. The additional identifier is the `Market Average` aggregate;
+  exclude it from market counts. The model-details file reports a last survey
+  point of September 2026 even though modeled rows continue through November.
+- All downloaded rows used `KES`. The ticker file names Beans (dry), Maize
+  (white), Goat (small local quality), an indexed Food Price Index, and an
+  unofficial exchange-rate component. Unit labels are `KG`/`Kg` for beans and
+  maize, `1 unit` for goat, and `LCU, Indexed, January 2018 = 1` for the index.
+  The source does not establish a retail-versus-wholesale classification in
+  the profiled fields.
+- The catalog describes this as **modeled monthly food-price estimates**.
+  The source dictionary labels open/high/low/close item fields as estimates;
+  it describes sparse base item fields only by the item name. Do not equate
+  base values with direct market transactions without a separate methodology
+  confirmation. The model-details archive names the `cubist (Andree, 2021)`
+  imputation method for beans and maize. Dataset metadata says estimates are
+  regularly revised as new price information becomes available, and previous
+  files are archived.
+- Source access is marked `open`, but the inspected catalog and table metadata
+  did not expose an explicit reuse license. Confirm the applicable terms and
+  attribution before redistribution. The separate HDX mirror has its own
+  CC-BY license metadata; that does not establish the World Bank catalog
+  license.
+
+The actual 46 wide-table CSV fields are:
+
+| Group | Actual source fields |
+|---|---|
+| Geography and identity | `ISO3`, `country`, `adm1_name`, `adm2_name`, `mkt_name`, `lat`, `lon`, `geo_id` |
+| Time and currency | `price_date`, `year`, `month`, `currency` |
+| Model/data coverage | `components`, `start_dense_data`, `last_survey_point`, `data_coverage`, `data_coverage_recent`, `index_confidence_score`, `spatially_interpolated` |
+| Item value fields | `beans`, `livestock_goat_s_fao`, `maize_fao`, `o_beans`, `h_beans`, `l_beans`, `c_beans`, `inflation_beans`, `trust_beans`, `o_livestock_goat_s_fao`, `h_livestock_goat_s_fao`, `l_livestock_goat_s_fao`, `c_livestock_goat_s_fao`, `inflation_livestock_goat_s_fao`, `trust_livestock_goat_s_fao`, `o_maize_fao`, `h_maize_fao`, `l_maize_fao`, `c_maize_fao`, `inflation_maize_fao`, `trust_maize_fao`, `o_food_price_index`, `h_food_price_index`, `l_food_price_index`, `c_food_price_index`, `inflation_food_price_index`, `trust_food_price_index` |
+
+The World Bank table dictionary describes all 46 fields as strings. In the
+downloaded CSV, identifiers and labels are strings while date, coordinates,
+coverage scores, and price/estimate columns are numeric-like strings. Parse
+them only after validating their source formats. The proposed market-month
+key for this wide table is `(ISO3, geo_id, price_date)`; it had no duplicate
+rows in the profiled version.
+
+The file contained 1,839 nonblank `beans`, 2,617 `livestock_goat_s_fao`, and
+3,061 `maize_fao` values; the rest of each market-month field was blank.
+Their observed ranges were respectively 23–215, 785–8,809, and 6–132 in
+source units. These sparse item fields and the model-details observation
+counts do not fully agree (the details file lists 1,941 beans and 3,055 maize
+observations); retain the discrepancy for source-owner clarification. The
+`o_`, `h_`, `l_`, and `c_` estimates are populated even where input item
+values are absent. A Tukey 1.5×IQR screen is reported as an outlier-candidate
+count only; those candidates are retained and are not asserted to be errors.
+For the sparse base values, the screen marked 84 beans, 64 goat, and 85 maize
+values as candidates. These cross-market/time fences can flag legitimate
+differences and trends; no values are removed. Latitude and longitude are
+blank on the 239 monthly `Market Average` aggregate rows, not on the market
+records in this profile.
+
+### Geographic interpretation and coverage
+
+The source provides market names, coordinates, a `geo_id`, and raw
+`adm1_name`/`adm2_name` labels but no county code. The profile observed 16
+distinct admin-1 labels and 36 admin-2 labels. Some lower-level names resemble
+current counties, others are localities/subcounties, and the set includes
+`Market Average`. The admin levels are not a defensible 47-county crosswalk.
+Accordingly, **0 of 47 counties are currently certified as mapped**; this is
+not a claim that no markets are located in those counties. Require a reviewed,
+versioned market-to-county mapping before any county aggregation. Market
+estimates are not automatically representative of their wider county.
+
+### Secondary: WFP / HDX
+
+- WFP DataViz: <https://dataviz.vam.wfp.org/eastern-africa/kenya/economic/prices>
+- Official HDX Kenya catalog: <https://data.humdata.org/dataset/wfp-food-prices-for-kenya>
+- HAPI food-price documentation:
+  <https://hdx-hapi.readthedocs.io/en/latest/data_usage_guides/food_security_nutrition_and_poverty/>
+- HDX catalog metadata identified a Kenya WFP Food Prices CSV, updated
+  2026-11-04, and declared **Creative Commons Attribution for
+  Intergovernmental Organisations (CC BY-IGO)**. Its metadata describes a
+  weekly release cadence with mostly monthly observations.
+- HDX exposes a dataset/resource modified timestamp rather than an immutable
+  Kenya data version. A production consumer should retain retrieval time and
+  a content checksum for each snapshot; whether prior WFP values are revised
+  in place was not established.
+- In the local access probe, the catalog's CSV download URLs returned HTTP
+  202 with an empty HTML response. No bypass was attempted; therefore no
+  Kenya WFP data rows, coverage counts, or actual CSV schema were validated.
+  The documented HAPI API returns fields including
+  `commodity_code`, `commodity_name`, `price_flag`, `price_type`, `price`,
+  `unit`, `currency_code`, `reference_period_start/end`, admin codes/names,
+  `market_code`, `market_name`, `lat`, and `lon`. Its documented request
+  requires an application identifier containing an application name and
+  contact email. No user email was provided, so none was fabricated or sent.
+- HAPI documentation says some market names are p-coded from admin names and
+  admin-2 labels can represent mixed administrative levels. Verify the actual
+  Kenya market crosswalk and `price_flag`/`price_type` before using it as a
+  direct observation series.
+
+### Cross-check: NDMA
+
+The official listing exposed a public preview/download for **Kilifi County
+Drought Early Warning Bulletin, September 2026**, “as at 30 September 2026”.
+The 20-page PDF returned HTTP 200 on 2026-11-06; its SHA-256 and retrieval
+metadata are in the machine-readable feasibility report. Text extraction with
+`pypdf` (no OCR) found the crop-price discussion on page 9 and its Beans chart
+on page 10:
+
+| Commodity | Reference month | Geographic level | Reported value | Unit | Qualification |
+|---|---|---|---:|---|---|
+| Maize | September 2026 | Kilifi County average | KES 48.8 | per kg | Narrative says it fell from KES 50.30. |
+| Beans | September 2026 | Kilifi County average | KES 144.0 | per kg | Page 10 chart text yields KES 144.1; preserve the 0.1 discrepancy. |
+
+These are county-bulletin averages, not named-market observations. The PDF
+footer states © 2026 NDMA, All Rights Reserved; no open reuse license was
+identified. One month and county do not establish a consistent monthly series
+or a 47-county market mapping.
+
+### Feasibility decision
+
+**B. Approve only a restricted pilot for selected markets.** The World Bank
+provides broad monthly market coverage and a reproducible versioned download,
+but values are modeled estimates, direct-observation status is not explicit
+for every item field, county mapping is unresolved, and model estimates extend
+past the last survey point. Keep source-estimate and observed-price series
+separate, preserve price type/currency/unit, visibly label estimates and
+uncertainty, and do not aggregate into county dashboards until a defensible
+crosswalk and representativeness method are reviewed. WFP is a promising
+independent source but remains unvalidated here because its download was not
+accessible. NDMA is useful documentary context, not a substitute for a
+market-level time series.
+
+The repeatable primary-source profile is generated with:
+
+```sh
+uv run python scripts/profile_subnational_prices.py
+```
+
+The script uses the official Kenya-only file listing, bounded retries and
+streamed downloads under `data/landing/subnational/`; it does not fetch the
+global RTFP archive or extract ZIP contents to disk. The JSON report includes
+only three representative rows, not the full observations. A timestamped JSON
+snapshot is written under `reports/source_profiling/`; it is a local profiling
+artifact, not a checked-in dataset.
+World Bank evidence is refreshed on each CLI run; WFP and NDMA evidence in
+that report is a dated, bounded source-reconnaissance snapshot from
+2026-11-06 and should be rechecked before a later feasibility decision.
