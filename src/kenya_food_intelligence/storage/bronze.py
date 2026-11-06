@@ -1,4 +1,4 @@
-"""Immutable, content-addressed storage for World Bank Bronze responses."""
+"""Immutable, content-addressed storage for Bronze source payloads."""
 
 from __future__ import annotations
 
@@ -25,6 +25,9 @@ _COUNTRY_PATTERN = re.compile(r"[A-Z]{3}\Z")
 _INDICATOR_PATTERN = re.compile(r"[A-Z0-9]+(?:\.[A-Z0-9]+)*\Z")
 _SNAPSHOT_PATTERN = re.compile(r"sha256-[0-9a-f]{64}\Z")
 _RUN_ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
+_SOURCE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_PUBLICATION_PATTERN = re.compile(r"\d{4}-(0[1-9]|1[0-2])\Z")
+_FILENAME_PATTERN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}\Z")
 
 
 class BronzeStorageError(Exception):
@@ -230,6 +233,163 @@ class BronzeStore:
 
         return "created", snapshot_id, snapshot_dir, manifest
 
+    def publish_binary_snapshot(
+        self,
+        *,
+        source_id: str,
+        publication_identity: str,
+        payload_path: Path,
+        filename: str,
+        metadata: JsonObject,
+        expected_sha256: str,
+        expected_size_bytes: int,
+    ) -> tuple[str, str, Path, JsonObject]:
+        """Publish one content-addressed binary payload without buffering it."""
+        _validate_binary_identity(source_id, publication_identity, filename)
+        if payload_path.is_symlink() or not payload_path.is_file():
+            raise BronzeStorageError("Binary snapshot payload is not a regular file")
+
+        publication_dir = (
+            self.output_root
+            / "bronze"
+            / source_id
+            / f"publication={publication_identity}"
+        )
+        snapshots_dir = publication_dir / "snapshots"
+        lock_path = (
+            self.output_root
+            / "manifests"
+            / source_id
+            / "locks"
+            / f"publication={publication_identity}.lock"
+        )
+        try:
+            snapshots_dir.mkdir(parents=True, exist_ok=True)
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise BronzeStorageError(
+                f"Unable to create {source_id} Bronze directories: {error}"
+            ) from error
+
+        with _exclusive_lock(lock_path):
+            try:
+                _remove_abandoned_staging(snapshots_dir)
+                staging_dir = Path(
+                    tempfile.mkdtemp(prefix=".staging-", dir=snapshots_dir)
+                )
+            except OSError as error:
+                raise BronzeStorageError(
+                    f"Unable to create binary snapshot staging directory: {error}"
+                ) from error
+
+            try:
+                payload_digest, payload_size = _copy_and_hash(
+                    payload_path,
+                    staging_dir / filename,
+                )
+                if (
+                    payload_digest != expected_sha256
+                    or payload_size != expected_size_bytes
+                ):
+                    raise SnapshotIntegrityError(
+                        "Downloaded payload changed before snapshot publication"
+                    )
+                descriptor: JsonObject = {
+                    "descriptor_schema_version": 2,
+                    "identity": {
+                        "source_id": source_id,
+                        "publication_identity": publication_identity,
+                        "sha256": payload_digest,
+                        "size_bytes": payload_size,
+                    },
+                    "provenance": {"filename": filename},
+                }
+                identity_bytes = _canonical_json(descriptor["identity"])
+                descriptor_bytes = _canonical_json(descriptor)
+                snapshot_id = "sha256-" + hashlib.sha256(identity_bytes).hexdigest()
+                snapshot_dir = snapshots_dir / snapshot_id
+                if snapshot_dir.exists() or snapshot_dir.is_symlink():
+                    manifest = _verify_binary_snapshot(
+                        snapshot_dir,
+                        source_id=source_id,
+                        publication_identity=publication_identity,
+                        snapshot_id=snapshot_id,
+                    )
+                    return "unchanged", snapshot_id, snapshot_dir, manifest
+
+                _write_bytes(
+                    staging_dir / "descriptor.json",
+                    descriptor_bytes + b"\n",
+                )
+                manifest: JsonObject = {
+                    "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
+                    "identity": {
+                        "source_id": source_id,
+                        "publication_identity": publication_identity,
+                        "reference_month": publication_identity,
+                        "snapshot_id": snapshot_id,
+                    },
+                    "source": metadata.get("source", {}),
+                    "file": {
+                        "filename": filename,
+                        "content_type": metadata.get("content_type"),
+                        "size_bytes": payload_size,
+                        "sha256": payload_digest,
+                        "page_count": metadata.get("page_count"),
+                    },
+                    "validation": metadata.get("validation", {}),
+                    "attribution": metadata.get("attribution"),
+                    "integrity": {
+                        "content_derived_snapshot_digest": snapshot_id.removeprefix(
+                            "sha256-"
+                        )
+                    },
+                    "snapshot_created_at_utc": datetime.now(UTC).isoformat(),
+                }
+                _write_bytes(staging_dir / "manifest.json", _pretty_json(manifest))
+                _verify_binary_snapshot(
+                    staging_dir,
+                    source_id=source_id,
+                    publication_identity=publication_identity,
+                    snapshot_id=snapshot_id,
+                )
+                _fsync_directory(staging_dir)
+                os.rename(staging_dir, snapshot_dir)
+                _fsync_directory(snapshots_dir)
+                return "created", snapshot_id, snapshot_dir, manifest
+            except SnapshotIntegrityError:
+                raise
+            except OSError as error:
+                raise BronzeStorageError(
+                    f"Unable to publish {source_id} Bronze snapshot: {error}"
+                ) from error
+            finally:
+                if staging_dir.exists():
+                    shutil.rmtree(staging_dir)
+
+    def write_source_run_record(self, record: JsonObject) -> Path:
+        """Atomically append a run record for a source without WB partitions."""
+        source_id = record.get("source_id")
+        run_id = record.get("ingestion_run_id")
+        if (
+            not isinstance(source_id, str)
+            or _SOURCE_PATTERN.fullmatch(source_id) is None
+        ):
+            raise BronzeStorageError("Run record source ID is unsafe")
+        if not isinstance(run_id, str) or _RUN_ID_PATTERN.fullmatch(run_id) is None:
+            raise BronzeStorageError("Run ID must be a 32-character UUID hex value")
+        if record.get("outcome") not in {"created", "unchanged", "failed"}:
+            raise BronzeStorageError("Run record outcome is invalid")
+
+        run_dir = self.output_root / "manifests" / source_id / "runs"
+        try:
+            run_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise BronzeStorageError(
+                f"Unable to create ingestion run-record directory: {error}"
+            ) from error
+        return _write_run_record_at(run_dir, run_id, record)
+
     def write_run_record(self, record: JsonObject) -> Path:
         """Atomically append one immutable run outcome."""
         country_code = record.get("country_code")
@@ -260,32 +420,36 @@ class BronzeStore:
             raise BronzeStorageError(
                 f"Unable to create ingestion run-record directory: {error}"
             ) from error
-        target = run_dir / f"{run_id}.json"
-        temporary_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                dir=run_dir,
-                prefix=f".{run_id}.",
-                suffix=".tmp",
-                delete=False,
-            ) as file:
-                temporary_path = Path(file.name)
-                file.write(_pretty_json(record))
-                file.flush()
-                os.fsync(file.fileno())
-            os.link(temporary_path, target)
-            _fsync_directory(run_dir)
-            return target
-        except FileExistsError as error:
-            raise BronzeStorageError(f"Run record already exists: {run_id}") from error
-        except OSError as error:
-            raise BronzeStorageError(
-                f"Unable to publish ingestion run record: {error}"
-            ) from error
-        finally:
-            if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
+        return _write_run_record_at(run_dir, run_id, record)
+
+
+def _write_run_record_at(run_dir: Path, run_id: str, record: JsonObject) -> Path:
+    target = run_dir / f"{run_id}.json"
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=run_dir,
+            prefix=f".{run_id}.",
+            suffix=".tmp",
+            delete=False,
+        ) as file:
+            temporary_path = Path(file.name)
+            file.write(_pretty_json(record))
+            file.flush()
+            os.fsync(file.fileno())
+        os.link(temporary_path, target)
+        _fsync_directory(run_dir)
+        return target
+    except FileExistsError as error:
+        raise BronzeStorageError(f"Run record already exists: {run_id}") from error
+    except OSError as error:
+        raise BronzeStorageError(
+            f"Unable to publish ingestion run record: {error}"
+        ) from error
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 @contextmanager
@@ -317,6 +481,170 @@ def _validate_identity(country_code: str, indicator_code: str, per_page: int) ->
         raise BronzeStorageError("Indicator code is not safe for a storage partition")
     if isinstance(per_page, bool) or not 1 <= per_page <= 1000:
         raise BronzeStorageError("Page size must be between 1 and 1000")
+
+
+def _validate_binary_identity(
+    source_id: str,
+    publication_identity: str,
+    filename: str,
+) -> None:
+    if _SOURCE_PATTERN.fullmatch(source_id) is None:
+        raise BronzeStorageError("Source ID is not safe for a storage partition")
+    if _PUBLICATION_PATTERN.fullmatch(publication_identity) is None:
+        raise BronzeStorageError("Publication identity must use YYYY-MM format")
+    if _FILENAME_PATTERN.fullmatch(filename) is None or filename in {".", ".."}:
+        raise BronzeStorageError("Binary payload filename is unsafe")
+
+
+def _copy_and_hash(source: Path, destination: Path) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size_bytes = 0
+    with source.open("rb") as input_file, destination.open("xb") as output_file:
+        while chunk := input_file.read(1024 * 1024):
+            output_file.write(chunk)
+            digest.update(chunk)
+            size_bytes += len(chunk)
+        output_file.flush()
+        os.fsync(output_file.fileno())
+    return digest.hexdigest(), size_bytes
+
+
+def _verify_binary_snapshot(
+    snapshot_dir: Path,
+    *,
+    source_id: str,
+    publication_identity: str,
+    snapshot_id: str,
+) -> JsonObject:
+    if _SNAPSHOT_PATTERN.fullmatch(snapshot_id) is None:
+        raise SnapshotIntegrityError("Snapshot identifier is invalid")
+    if snapshot_dir.is_symlink() or not snapshot_dir.is_dir():
+        raise SnapshotIntegrityError(f"Snapshot directory is missing: {snapshot_dir}")
+    descriptor_path = snapshot_dir / "descriptor.json"
+    manifest_path = snapshot_dir / "manifest.json"
+    if any(
+        path.is_symlink() or not path.is_file()
+        for path in (descriptor_path, manifest_path)
+    ):
+        raise SnapshotIntegrityError("Snapshot metadata is missing or unsafe")
+
+    try:
+        descriptor_bytes = descriptor_path.read_bytes()
+        descriptor = json.loads(descriptor_bytes)
+        manifest = json.loads(manifest_path.read_bytes())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SnapshotIntegrityError(
+            f"Snapshot metadata is unreadable: {error}"
+        ) from error
+    if not isinstance(descriptor, dict) or not isinstance(manifest, dict):
+        raise SnapshotIntegrityError("Snapshot metadata must be JSON objects")
+    if descriptor_bytes != _canonical_json(descriptor) + b"\n":
+        raise SnapshotIntegrityError("Snapshot descriptor is not canonical")
+    identity_descriptor = descriptor.get("identity")
+    provenance = descriptor.get("provenance")
+    if (
+        descriptor.get("descriptor_schema_version") != 2
+        or not isinstance(identity_descriptor, dict)
+        or not isinstance(provenance, dict)
+    ):
+        raise SnapshotIntegrityError("Snapshot descriptor schema is unsupported")
+    filename = provenance.get("filename")
+    if (
+        not isinstance(filename, str)
+        or _FILENAME_PATTERN.fullmatch(filename) is None
+        or filename in {".", ".."}
+    ):
+        raise SnapshotIntegrityError("Snapshot descriptor filename is unsafe")
+    payload_path = snapshot_dir / filename
+    if payload_path.is_symlink() or not payload_path.is_file():
+        raise SnapshotIntegrityError("Snapshot payload is missing or unsafe")
+    expected_names = {"descriptor.json", "manifest.json", filename}
+    if {path.name for path in snapshot_dir.iterdir()} != expected_names:
+        raise SnapshotIntegrityError("Snapshot contains unexpected or missing files")
+
+    try:
+        payload_digest, payload_size = _hash_file(payload_path)
+    except OSError as error:
+        raise SnapshotIntegrityError(
+            f"Snapshot payload is unreadable: {error}"
+        ) from error
+    expected_identity = {
+        "source_id": source_id,
+        "publication_identity": publication_identity,
+        "sha256": payload_digest,
+        "size_bytes": payload_size,
+    }
+    if identity_descriptor != expected_identity:
+        raise SnapshotIntegrityError(
+            "Snapshot payload checksum or descriptor is inconsistent"
+        )
+    if hashlib.sha256(
+        _canonical_json(identity_descriptor)
+    ).hexdigest() != snapshot_id.removeprefix("sha256-"):
+        raise SnapshotIntegrityError("Snapshot identity digest does not match ID")
+    identity = manifest.get("identity")
+    if identity != {
+        "source_id": source_id,
+        "publication_identity": publication_identity,
+        "reference_month": publication_identity,
+        "snapshot_id": snapshot_id,
+    }:
+        raise SnapshotIntegrityError("Snapshot manifest identity is inconsistent")
+    file_metadata = manifest.get("file")
+    source_metadata = manifest.get("source")
+    validation = manifest.get("validation")
+    integrity = manifest.get("integrity")
+    if not isinstance(file_metadata, dict) or any(
+        file_metadata.get(key) != value
+        for key, value in {
+            "filename": filename,
+            "sha256": payload_digest,
+            "size_bytes": payload_size,
+        }.items()
+    ):
+        raise SnapshotIntegrityError("Snapshot file metadata is inconsistent")
+    if (
+        manifest.get("manifest_schema_version") != MANIFEST_SCHEMA_VERSION
+        or not isinstance(source_metadata, dict)
+        or not isinstance(source_metadata.get("listing_url"), str)
+        or not isinstance(source_metadata.get("document_url"), str)
+        or not isinstance(validation, dict)
+        or validation.get("status") != "passed"
+        or validation.get("http_status_200") is not True
+        or validation.get("pdf_signature") is not True
+        or validation.get("eof_marker") is not True
+        or validation.get("readable_pdf_structure") is not True
+        or not isinstance(validation.get("page_count"), int)
+        or isinstance(validation.get("page_count"), bool)
+        or validation.get("page_count") < 1
+        or not (
+            validation.get("reference_month_match") is True
+            or validation.get("reference_month_match") == "unverified"
+        )
+        or not (
+            validation.get("source_title_month_match") is True
+            or validation.get("source_title_month_match") == "unverified"
+        )
+        or file_metadata.get("page_count") != validation.get("page_count")
+        or file_metadata.get("content_type")
+        not in {"application/pdf", "application/octet-stream"}
+        or not isinstance(integrity, dict)
+        or integrity.get("content_derived_snapshot_digest")
+        != snapshot_id.removeprefix("sha256-")
+        or not isinstance(manifest.get("attribution"), str)
+    ):
+        raise SnapshotIntegrityError("Snapshot manifest validation is inconsistent")
+    return manifest
+
+
+def _hash_file(path: Path) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size_bytes = 0
+    with path.open("rb") as file:
+        while chunk := file.read(1024 * 1024):
+            digest.update(chunk)
+            size_bytes += len(chunk)
+    return digest.hexdigest(), size_bytes
 
 
 def _remove_abandoned_staging(snapshots_dir: Path) -> None:
