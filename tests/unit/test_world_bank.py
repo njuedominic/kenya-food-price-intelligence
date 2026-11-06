@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from kenya_food_intelligence.profiling.world_bank import profile_indicator
+from kenya_food_intelligence.sources.http import HTTPClient, HTTPResponseTooLarge
 from kenya_food_intelligence.sources.world_bank import (
     WorldBankClient,
     WorldBankHTTPError,
@@ -21,14 +22,33 @@ INDICATOR = "FP.CPI.TOTL"
 
 
 class JsonResponse(io.BytesIO):
-    def __init__(self, value: object) -> None:
-        super().__init__(json.dumps(value).encode())
+    def __init__(
+        self,
+        value: object,
+        *,
+        body: bytes | None = None,
+        content_type: str = "application/json",
+    ) -> None:
+        super().__init__(body if body is not None else json.dumps(value).encode())
         self.status = 200
         self.headers = Message()
-        self.headers["Content-Type"] = "application/json"
+        self.headers["Content-Type"] = content_type
 
     def geturl(self) -> str:
         return "https://api.worldbank.org/v2/test"
+
+
+class ReadTrackingResponse(JsonResponse):
+    def __init__(self, value: object, *, body: bytes | None = None) -> None:
+        super().__init__(value, body=body)
+        self.read_sizes: list[int] = []
+        self.bytes_read = 0
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        body = super().read(size)
+        self.bytes_read += len(body)
+        return body
 
 
 def observation(
@@ -118,11 +138,244 @@ def test_fetches_all_pages_and_checks_pagination_metadata() -> None:
     assert all(call.kwargs["timeout"] == 20.0 for call in open_url.call_args_list)
 
 
+def test_raw_page_api_preserves_exact_response_bytes() -> None:
+    client = WorldBankClient()
+    body = (
+        b'[ { "page" : 1, "pages" : 1, "per_page" : 100, "total" : 1 }, '
+        b'[{"indicator":{"id":"FP.CPI.TOTL","value":"CPI"},'
+        b'"country":{"id":"KE","value":"Kenya"},"countryiso3code":"KEN",'
+        b'"date":"2024","value":null,"unit":"","obs_status":"","decimal":1}] ]'
+    )
+    with patch(
+        "kenya_food_intelligence.sources.http.urlopen",
+        return_value=JsonResponse(
+            None,
+            body=body,
+            content_type="application/json; charset=utf-8",
+        ),
+    ):
+        result = client.get_indicator_observation_pages("KEN", INDICATOR)
+
+    assert len(result.pages) == 1
+    assert result.pages[0].body == body
+    assert result.pages[0].content_type == "application/json; charset=utf-8"
+    assert result.pages[0].observations[0]["value"] is None
+
+
+def test_raw_page_response_within_configured_byte_limit_succeeds() -> None:
+    body = json.dumps(page([observation("2024", 100)])).encode()
+    client = WorldBankClient(
+        max_page_bytes=len(body),
+        max_total_bytes=len(body),
+    )
+    tracked_response = ReadTrackingResponse(None, body=body)
+    with patch(
+        "kenya_food_intelligence.sources.http.urlopen",
+        return_value=tracked_response,
+    ):
+        result = client.get_indicator_observation_pages("KEN", INDICATOR)
+
+    assert result.pages[0].body == body
+    assert tracked_response.read_sizes == [len(body) + 1]
+
+
+def test_http_get_stops_reading_at_limit_plus_one_byte() -> None:
+    client = HTTPClient(
+        timeout=1,
+        max_retries=0,
+        backoff_factor=0,
+        user_agent="unit-test",
+    )
+    tracked_response = ReadTrackingResponse(None, body=b"more-than-four-bytes")
+    with patch(
+        "kenya_food_intelligence.sources.http.urlopen",
+        return_value=tracked_response,
+    ):
+        with pytest.raises(HTTPResponseTooLarge, match="exceeds 4 bytes"):
+            client.get("https://example.test/data", max_bytes=4)
+
+    assert tracked_response.read_sizes == [5]
+    assert tracked_response.bytes_read == 5
+
+
+def test_raw_page_response_over_limit_is_rejected() -> None:
+    body = json.dumps(page([observation("2024", 100)])).encode()
+    limit = len(body) - 1
+    client = WorldBankClient(max_page_bytes=limit, max_total_bytes=limit)
+    tracked_response = ReadTrackingResponse(None, body=body)
+    with patch(
+        "kenya_food_intelligence.sources.http.urlopen",
+        return_value=tracked_response,
+    ):
+        with pytest.raises(WorldBankResponseError, match="page response.*limit"):
+            client.get_indicator_observation_pages("KEN", INDICATOR)
+
+    assert tracked_response.bytes_read == limit + 1
+
+
+def test_reported_page_count_over_limit_fails_before_next_request() -> None:
+    client = WorldBankClient(max_pages=1)
+    oversized_page_count = page(
+        [observation("2024", 100)],
+        pages=2,
+        total=2,
+        per_page=1,
+    )
+    with patch(
+        "kenya_food_intelligence.sources.http.urlopen",
+        return_value=response(oversized_page_count),
+    ) as open_url:
+        with pytest.raises(WorldBankResponseError, match="maximum of 1"):
+            client.get_indicator_observation_pages("KEN", INDICATOR, per_page=1)
+
+    assert open_url.call_count == 1
+
+
+@pytest.mark.parametrize("page_count", [0, -1, "1", 1.5, True, None])
+def test_malformed_reported_page_counts_are_rejected(page_count: object) -> None:
+    payload = page([observation("2024", 100)])
+    payload[0]["pages"] = page_count
+    with patch(
+        "kenya_food_intelligence.sources.http.urlopen",
+        return_value=response(payload),
+    ):
+        with pytest.raises(WorldBankResponseError, match="Pagination"):
+            WorldBankClient(max_retries=0).get_indicator_observation_pages(
+                "KEN", INDICATOR
+            )
+
+
+def test_mult_page_response_within_aggregate_byte_limit_succeeds() -> None:
+    first_body = json.dumps(
+        page([observation("2024", 100)], pages=2, total=2, per_page=1)
+    ).encode()
+    second_body = json.dumps(
+        page(
+            [observation("2023", 99)],
+            page_number=2,
+            pages=2,
+            total=2,
+            per_page=1,
+        )
+    ).encode()
+    max_page_bytes = max(len(first_body), len(second_body))
+    client = WorldBankClient(
+        max_page_bytes=max_page_bytes,
+        max_total_bytes=len(first_body) + len(second_body),
+    )
+    with patch(
+        "kenya_food_intelligence.sources.http.urlopen",
+        side_effect=[
+            JsonResponse(None, body=first_body),
+            JsonResponse(None, body=second_body),
+        ],
+    ):
+        result = client.get_indicator_observation_pages("KEN", INDICATOR, per_page=1)
+
+    assert [len(raw_page.body) for raw_page in result.pages] == [
+        len(first_body),
+        len(second_body),
+    ]
+
+
+def test_mult_page_response_over_aggregate_byte_limit_fails() -> None:
+    first_body = json.dumps(
+        page([observation("2024", 100)], pages=2, total=2, per_page=1)
+    ).encode()
+    second_body = json.dumps(
+        page(
+            [observation("2023", 99)],
+            page_number=2,
+            pages=2,
+            total=2,
+            per_page=1,
+        )
+    ).encode()
+    max_page_bytes = max(len(first_body), len(second_body))
+    total_limit = len(first_body) + len(second_body) - 1
+    client = WorldBankClient(
+        max_page_bytes=max_page_bytes,
+        max_total_bytes=total_limit,
+    )
+    tracked_second_page = ReadTrackingResponse(None, body=second_body)
+    with patch(
+        "kenya_food_intelligence.sources.http.urlopen",
+        side_effect=[
+            JsonResponse(None, body=first_body),
+            tracked_second_page,
+        ],
+    ):
+        with pytest.raises(WorldBankResponseError, match="total response.*limit"):
+            client.get_indicator_observation_pages("KEN", INDICATOR, per_page=1)
+
+    assert tracked_second_page.bytes_read == total_limit - len(first_body) + 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("indicator", {"id": "FP.CPI.TOTL.ZG", "value": "Inflation"}, "indicator id"),
+        ("countryiso3code", "UGA", "country code"),
+        ("country", {"id": "XX", "value": "Elsewhere"}, "country identity"),
+    ],
+)
+def test_raw_pages_reject_wrong_indicator_or_country_identity(
+    field: str, value: object, message: str
+) -> None:
+    payload_observation = observation("2024", 100)
+    payload_observation[field] = value
+    client = WorldBankClient(max_retries=0)
+    with patch(
+        "kenya_food_intelligence.sources.http.urlopen",
+        return_value=response(page([payload_observation])),
+    ):
+        with pytest.raises(WorldBankResponseError, match=message):
+            client.get_indicator_observation_pages("KEN", INDICATOR)
+
+
+def test_raw_page_api_rejects_non_json_content_type() -> None:
+    client = WorldBankClient(max_retries=0)
+    with patch(
+        "kenya_food_intelligence.sources.http.urlopen",
+        return_value=JsonResponse([], content_type="text/html"),
+    ):
+        with pytest.raises(WorldBankResponseError, match="content type"):
+            client.get_indicator_observation_pages("KEN", INDICATOR)
+
+
+def test_raw_page_api_rejects_duplicate_or_missing_page_number() -> None:
+    client = WorldBankClient(max_retries=0)
+    with patch(
+        "kenya_food_intelligence.sources.http.urlopen",
+        side_effect=[
+            response(
+                page(
+                    [observation("2024", 100)],
+                    pages=2,
+                    total=2,
+                    per_page=1,
+                )
+            ),
+            response(
+                page(
+                    [observation("2023", 95)],
+                    page_number=1,
+                    pages=2,
+                    total=2,
+                    per_page=1,
+                )
+            ),
+        ],
+    ):
+        with pytest.raises(WorldBankResponseError, match="received page 1"):
+            client.get_indicator_observation_pages("KEN", INDICATOR, per_page=1)
+
+
 def test_empty_response_with_null_data_is_valid() -> None:
     client = WorldBankClient()
     with patch(
         "kenya_food_intelligence.sources.http.urlopen",
-        return_value=response(page(None, pages=0, total=0)),
+        return_value=response(page(None, pages=1, total=0)),
     ):
         result = client.get_indicator_observations("KEN", INDICATOR)
 
@@ -216,7 +469,10 @@ def test_changed_pagination_metadata_is_rejected() -> None:
             ),
         ],
     ):
-        with pytest.raises(WorldBankResponseError, match="Pagination metadata changed"):
+        with pytest.raises(
+            WorldBankResponseError,
+            match="Pagination metadata changed|[Pp]age count.*contradicts",
+        ):
             client.get_indicator_observations("KEN", INDICATOR, per_page=1)
 
 
@@ -228,7 +484,7 @@ def test_transient_http_error_retries_with_exponential_backoff() -> None:
     with (
         patch(
             "kenya_food_intelligence.sources.http.urlopen",
-            side_effect=[service_unavailable, response(page([], total=0, pages=0))],
+            side_effect=[service_unavailable, response(page([], total=0, pages=1))],
         ) as open_url,
         patch("kenya_food_intelligence.sources.http.time.sleep") as sleep,
     ):
@@ -286,7 +542,7 @@ def test_network_failures_are_retried_and_include_configured_timeout() -> None:
             "kenya_food_intelligence.sources.http.urlopen",
             side_effect=[
                 URLError("temporary network failure"),
-                response(page([], total=0, pages=0)),
+                response(page([], total=0, pages=1)),
             ],
         ) as open_url,
         patch("kenya_food_intelligence.sources.http.time.sleep") as sleep,
@@ -307,6 +563,60 @@ def test_client_rejects_invalid_retry_and_page_configuration() -> None:
         WorldBankClient(backoff_factor=-1)
     with pytest.raises(ValueError, match="per_page"):
         WorldBankClient().get_indicator_observations("KEN", INDICATOR, per_page=1001)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("max_pages", 0),
+        ("max_pages", -1),
+        ("max_pages", True),
+        ("max_pages", 1.5),
+        ("max_page_bytes", 0),
+        ("max_page_bytes", -1),
+        ("max_page_bytes", False),
+        ("max_page_bytes", "1024"),
+        ("max_total_bytes", 0),
+        ("max_total_bytes", -1),
+        ("max_total_bytes", True),
+        ("max_total_bytes", 12.5),
+    ],
+)
+def test_client_rejects_invalid_resource_bounds(name: str, value: object) -> None:
+    with pytest.raises(ValueError, match=name):
+        WorldBankClient(**{name: value})
+
+
+def test_client_rejects_total_limit_smaller_than_page_limit() -> None:
+    with pytest.raises(ValueError, match="at least max_page_bytes"):
+        WorldBankClient(max_page_bytes=1024, max_total_bytes=1023)
+
+
+@pytest.mark.parametrize("indicator_code", ["FP.CPI.TOTL", "FP.CPI.TOTL.ZG"])
+def test_both_approved_indicators_fetch_with_resource_bounds(
+    indicator_code: str,
+) -> None:
+    client = WorldBankClient(
+        max_page_bytes=1024 * 1024, max_total_bytes=2 * 1024 * 1024
+    )
+    with patch(
+        "kenya_food_intelligence.sources.http.urlopen",
+        return_value=response(
+            page(
+                [
+                    observation(
+                        "2024",
+                        100,
+                        indicator_id=indicator_code,
+                    )
+                ]
+            )
+        ),
+    ):
+        result = client.get_indicator_observation_pages("KEN", indicator_code)
+
+    assert len(result.pages) == 1
+    assert result.observations[0]["indicator"]["id"] == indicator_code
 
 
 def test_duplicate_indicator_year_combinations_are_reported() -> None:

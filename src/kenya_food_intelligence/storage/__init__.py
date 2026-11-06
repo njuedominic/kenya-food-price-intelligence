@@ -1,0 +1,1 @@
+"""Local immutable storage components."""
