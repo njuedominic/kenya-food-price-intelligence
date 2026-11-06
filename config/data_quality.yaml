@@ -1,0 +1,20 @@
+required_source_metadata:
+  - source_system
+  - dataset_name
+  - source_url
+  - ingestion_timestamp
+  - observation_date
+  - pipeline_run_id
+  - schema_version
+  - record_hash
+observation_classes:
+  - official
+  - derived
+  - synthetic
+policies:
+  invalid_schema: quarantine
+  duplicate_records: retain_hash_and_apply_source_aware_deduplication
+  missing_values: preserve_and_record_quality_status
+  revised_sources: retain_ingestion_history
+  units_and_currency: normalize_only_with_documented_source_context
+  late_arrivals: retain_observation_date_and_ingestion_timestamp

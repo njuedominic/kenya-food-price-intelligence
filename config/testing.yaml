@@ -1,0 +1,5 @@
+environment: testing
+timezone: UTC
+data_root: ./.test-data
+log_level: WARNING
+allow_network_sources: false

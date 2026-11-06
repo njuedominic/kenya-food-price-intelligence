@@ -1,0 +1,8 @@
+environment: development
+timezone: UTC
+data_root: ./data
+log_level: INFO
+observation_classes:
+  official: official_source_observation
+  derived: derived_statistic
+  synthetic: synthetic_or_simulated

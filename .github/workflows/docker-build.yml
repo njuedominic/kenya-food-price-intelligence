@@ -1,0 +1,27 @@
+name: Docker build
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build available Dockerfiles
+        shell: bash
+        run: |
+          mapfile -t dockerfiles < <(find . -type f -name Dockerfile -not -path './.git/*' | sort)
+          if (( ${#dockerfiles[@]} == 0 )); then
+            echo "No Dockerfiles are present; no image build was attempted."
+            exit 0
+          fi
+          for dockerfile in "${dockerfiles[@]}"; do
+            docker build --file "$dockerfile" "$(dirname "$dockerfile")"
+          done
