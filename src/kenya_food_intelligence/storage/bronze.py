@@ -28,6 +28,7 @@ _RUN_ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
 _SOURCE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _PUBLICATION_PATTERN = re.compile(r"\d{4}-(0[1-9]|1[0-2])\Z")
 _FILENAME_PATTERN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}\Z")
+_BINARY_FILENAME_PATTERN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._()-]{0,127}\Z")
 
 
 class BronzeStorageError(Exception):
@@ -321,14 +322,16 @@ class BronzeStore:
                     staging_dir / "descriptor.json",
                     descriptor_bytes + b"\n",
                 )
+                manifest_identity: JsonObject = {
+                    "source_id": source_id,
+                    "publication_identity": publication_identity,
+                    "snapshot_id": snapshot_id,
+                }
+                if _PUBLICATION_PATTERN.fullmatch(publication_identity) is not None:
+                    manifest_identity["reference_month"] = publication_identity
                 manifest: JsonObject = {
                     "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
-                    "identity": {
-                        "source_id": source_id,
-                        "publication_identity": publication_identity,
-                        "reference_month": publication_identity,
-                        "snapshot_id": snapshot_id,
-                    },
+                    "identity": manifest_identity,
                     "source": metadata.get("source", {}),
                     "file": {
                         "filename": filename,
@@ -346,6 +349,8 @@ class BronzeStore:
                     },
                     "snapshot_created_at_utc": datetime.now(UTC).isoformat(),
                 }
+                if "archive" in metadata:
+                    manifest["archive"] = metadata["archive"]
                 _write_bytes(staging_dir / "manifest.json", _pretty_json(manifest))
                 _verify_binary_snapshot(
                     staging_dir,
@@ -490,9 +495,17 @@ def _validate_binary_identity(
 ) -> None:
     if _SOURCE_PATTERN.fullmatch(source_id) is None:
         raise BronzeStorageError("Source ID is not safe for a storage partition")
-    if _PUBLICATION_PATTERN.fullmatch(publication_identity) is None:
+    if source_id == "faostat_producer_prices_normalized":
+        if publication_identity != "normalized":
+            raise BronzeStorageError(
+                "FAOSTAT publication identity must be 'normalized'"
+            )
+    elif _PUBLICATION_PATTERN.fullmatch(publication_identity) is None:
         raise BronzeStorageError("Publication identity must use YYYY-MM format")
-    if _FILENAME_PATTERN.fullmatch(filename) is None or filename in {".", ".."}:
+    if _BINARY_FILENAME_PATTERN.fullmatch(filename) is None or filename in {
+        ".",
+        "..",
+    }:
         raise BronzeStorageError("Binary payload filename is unsafe")
 
 
@@ -551,7 +564,7 @@ def _verify_binary_snapshot(
     filename = provenance.get("filename")
     if (
         not isinstance(filename, str)
-        or _FILENAME_PATTERN.fullmatch(filename) is None
+        or _BINARY_FILENAME_PATTERN.fullmatch(filename) is None
         or filename in {".", ".."}
     ):
         raise SnapshotIntegrityError("Snapshot descriptor filename is unsafe")
@@ -583,12 +596,14 @@ def _verify_binary_snapshot(
     ).hexdigest() != snapshot_id.removeprefix("sha256-"):
         raise SnapshotIntegrityError("Snapshot identity digest does not match ID")
     identity = manifest.get("identity")
-    if identity != {
+    expected_manifest_identity = {
         "source_id": source_id,
         "publication_identity": publication_identity,
-        "reference_month": publication_identity,
         "snapshot_id": snapshot_id,
-    }:
+    }
+    if _PUBLICATION_PATTERN.fullmatch(publication_identity) is not None:
+        expected_manifest_identity["reference_month"] = publication_identity
+    if identity != expected_manifest_identity:
         raise SnapshotIntegrityError("Snapshot manifest identity is inconsistent")
     file_metadata = manifest.get("file")
     source_metadata = manifest.get("source")
@@ -603,13 +618,28 @@ def _verify_binary_snapshot(
         }.items()
     ):
         raise SnapshotIntegrityError("Snapshot file metadata is inconsistent")
+    if manifest.get("manifest_schema_version") != MANIFEST_SCHEMA_VERSION:
+        raise SnapshotIntegrityError("Snapshot manifest schema is unsupported")
     if (
-        manifest.get("manifest_schema_version") != MANIFEST_SCHEMA_VERSION
-        or not isinstance(source_metadata, dict)
-        or not isinstance(source_metadata.get("listing_url"), str)
-        or not isinstance(source_metadata.get("document_url"), str)
+        not isinstance(source_metadata, dict)
         or not isinstance(validation, dict)
         or validation.get("status") != "passed"
+        or not isinstance(integrity, dict)
+        or integrity.get("content_derived_snapshot_digest")
+        != snapshot_id.removeprefix("sha256-")
+        or not isinstance(manifest.get("attribution"), str)
+    ):
+        raise SnapshotIntegrityError("Snapshot manifest validation is inconsistent")
+    if source_id == "faostat_producer_prices_normalized":
+        _verify_faostat_snapshot_metadata(
+            source_metadata=source_metadata,
+            file_metadata=file_metadata,
+            validation=validation,
+            archive_metadata=manifest.get("archive"),
+        )
+    elif (
+        not isinstance(source_metadata.get("listing_url"), str)
+        or not isinstance(source_metadata.get("document_url"), str)
         or validation.get("http_status_200") is not True
         or validation.get("pdf_signature") is not True
         or validation.get("eof_marker") is not True
@@ -628,13 +658,52 @@ def _verify_binary_snapshot(
         or file_metadata.get("page_count") != validation.get("page_count")
         or file_metadata.get("content_type")
         not in {"application/pdf", "application/octet-stream"}
-        or not isinstance(integrity, dict)
-        or integrity.get("content_derived_snapshot_digest")
-        != snapshot_id.removeprefix("sha256-")
-        or not isinstance(manifest.get("attribution"), str)
     ):
         raise SnapshotIntegrityError("Snapshot manifest validation is inconsistent")
     return manifest
+
+
+def _verify_faostat_snapshot_metadata(
+    *,
+    source_metadata: dict[str, Any],
+    file_metadata: dict[str, Any],
+    validation: dict[str, Any],
+    archive_metadata: Any,
+) -> None:
+    if (
+        not isinstance(source_metadata.get("dataset_url"), str)
+        or not isinstance(source_metadata.get("download_url"), str)
+        or file_metadata.get("content_type")
+        not in {
+            "application/zip",
+            "application/x-zip-compressed",
+            "application/octet-stream",
+        }
+        or file_metadata.get("page_count") is not None
+        or validation.get("zip_structure_valid") is not True
+        or validation.get("member_safety_checks_passed") is not True
+        or validation.get("crc_validation_passed") is not True
+        or validation.get("resource_limits_passed") is not True
+        or not isinstance(archive_metadata, dict)
+        or not isinstance(archive_metadata.get("members"), list)
+        or archive_metadata.get("member_count") != len(archive_metadata["members"])
+        or archive_metadata.get("member_count", 0) <= 0
+        or archive_metadata.get("total_declared_uncompressed_bytes")
+        != archive_metadata.get("total_validated_uncompressed_bytes")
+    ):
+        raise SnapshotIntegrityError("FAOSTAT archive manifest metadata is invalid")
+    for member in archive_metadata["members"]:
+        if (
+            not isinstance(member, dict)
+            or not isinstance(member.get("name"), str)
+            or not isinstance(member.get("compressed_size_bytes"), int)
+            or not isinstance(member.get("uncompressed_size_bytes"), int)
+            or member.get("validated_size_bytes")
+            != member.get("uncompressed_size_bytes")
+            or not isinstance(member.get("crc32"), str)
+            or member.get("validation") != "crc_passed"
+        ):
+            raise SnapshotIntegrityError("FAOSTAT member inventory is invalid")
 
 
 def _hash_file(path: Path) -> tuple[str, int]:
