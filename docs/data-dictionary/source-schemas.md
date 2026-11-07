@@ -249,8 +249,10 @@ a 214,286,652-byte CSV plus four small lookup files. The profiler streams the
 download to `data/landing/faostat/`, checks its SHA-256 and every ZIP member's
 CRC, validates member paths, and reads the CSV directly from the archive. It
 does not extract any files or download the whole FAOSTAT database. The shared
-HTTP client enforces a timeout, bounded exponential retries, a 50 MB archive
-limit, and atomic file replacement.
+HTTP client enforces a timeout, bounded exponential retries, a 256-MiB archive
+limit, and atomic file replacement. M3.3 separately preserves the full
+normalized global ZIP in Bronze; it does not apply the Kenya-only filter
+described by this profiler or extract the archive to permanent storage.
 
 The catalog also links a query service and SQL containing `item_code` and
 `frequency` parameters. A test request using the catalog's maize code `56` and

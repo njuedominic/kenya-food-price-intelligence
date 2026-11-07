@@ -2,8 +2,9 @@
 
 A locally hosted foundation for collecting and analyzing Kenyan food-price,
 agricultural, and inflation data. It includes standalone World Bank CPI and
-KNBS monthly CPI PDF Bronze-ingestion commands; Silver/Gold ETL, streaming
-applications, warehouse models, and dashboards are not included.
+KNBS monthly CPI PDF and FAOSTAT producer-price Bronze-ingestion commands;
+Silver/Gold ETL, streaming applications, warehouse models, and dashboards are
+not included.
 
 ## Requirements
 
@@ -251,6 +252,44 @@ their filename-dependent IDs.
 
 The full identity, validation, attribution, recovery, and filesystem limits are
 specified in
+[the Bronze ingestion contract](docs/data-dictionary/bronze-ingestion.md).
+
+## FAOSTAT producer-price Bronze ingestion
+
+The M3.3 command streams the official FAOSTAT normalized Producer Prices ZIP,
+validates its central directory and every member's safety, decompressed size,
+and CRC, then publishes the original ZIP bytes as an immutable local Bronze
+snapshot. The archive is global: ingestion preserves all areas and does not
+filter to Kenya, extract files, parse observations, or require Docker.
+
+```sh
+uv run python scripts/ingest_faostat.py --help
+uv run python scripts/ingest_faostat.py
+```
+
+The command uses the catalogued FAOSTAT Producer Prices source and its official
+bulk ZIP URL; it does not accept an arbitrary URL. Defaults are a 25-second
+request timeout, two retries, a 0.5-second exponential backoff factor, a
+256-MiB download cap, 100 archive members, 512 MiB per member, and 1 GiB total
+decompressed bytes. ZIP members are streamed through a 64-KiB reader; no member
+is extracted to permanent storage. These bounds cover the HTTP payload and
+decompressed validation reads, not a strict upper bound on Python process
+memory or total temporary disk use.
+
+Snapshots are stored at
+`data/bronze/faostat_producer_prices_normalized/publication=normalized/snapshots/<snapshot-id>/`
+with the unchanged `Prices_E_All_Data_(Normalized).zip`, descriptor, and
+manifest. Each attempt writes a separate run record under
+`data/manifests/faostat_producer_prices_normalized/runs/`. Identical bytes reuse
+the verified snapshot (`unchanged`); revised bytes create another retained
+snapshot (`created`). The temporary download is isolated from
+`data/landing/faostat/`, so a profiling archive is not replaced. Kenya filtering
+and analytical validation are deferred to a future Silver transformation.
+FAOSTAT attribution and CC BY 4.0 metadata are retained, but third-party archive
+restrictions may apply; verify applicable terms before redistribution.
+
+The full ZIP member, resource, integrity, identity, recovery, and licensing
+contract is specified in
 [the Bronze ingestion contract](docs/data-dictionary/bronze-ingestion.md).
 
 ## Infrastructure notes
