@@ -308,9 +308,178 @@ the manifest, but the project does not assert that a PDF is licensed for
 redistribution; confirm current KNBS terms before sharing stored copies. No
 county-level inflation coverage or estimates are produced.
 
+## FAOSTAT normalized Producer Prices ZIP contract
+
+### Source identity and acquisition
+
+M3.3 ingests the catalogued FAOSTAT Producer Prices (`PP`) normalized bulk
+archive:
+
+- Dataset: `47c17894-8ca1-4bd0-ba4d-6078e919e9b1`
+- Domain: `https://www.fao.org/faostat/en/#data/PP`
+- Catalog: `https://data.fao.org/catalog/dataset/47c17894-8ca1-4bd0-ba4d-6078e919e9b1`
+- Download: `https://bulks-faostat.fao.org/production/Prices_E_All_Data_(Normalized).zip`
+
+Run the standalone command with the repository's locked environment:
+
+```sh
+uv run python scripts/ingest_faostat.py --help
+uv run python scripts/ingest_faostat.py
+```
+
+The command has no arbitrary URL override. It reuses the established FAOSTAT
+dataset descriptor, source client, shared HTTP transport, binary Bronze
+publisher, and source run-record writer. The profiling command continues to
+use `data/landing/faostat/`; M3.3 downloads into a unique temporary directory
+and never replaces or removes a profiling archive.
+
+The archive layout is checked against the source-profiled normalized dataset:
+one `Prices_E_All_Data_(Normalized).csv` data member and the four
+`Prices_E_AreaCodes.csv`, `Prices_E_Elements.csv`, `Prices_E_Flags.csv`, and
+`Prices_E_ItemCodes.csv` lookup members. All are expected at the archive root.
+Missing required files, duplicate names, or unrecognized additional members
+fail closed rather than silently selecting a different dataset. A future
+upstream layout change therefore requires an explicit reviewed update to this
+contract.
+
+### Download and validation resource limits
+
+Defaults are finite and configurable through the CLI and `FAOSTATClient`:
+
+| Limit | Default | Enforcement |
+|---|---:|---|
+| Compressed download | 256 MiB | Reject oversized declared `Content-Length` before streaming and count streamed bytes in the HTTP transport |
+| Archive members | 100 | Checked from the central directory before reading member data |
+| Declared uncompressed size per member | 512 MiB | Checked before opening the member |
+| Aggregate declared uncompressed size | 1 GiB | Checked before opening any member |
+| Actual uncompressed bytes per member | 512 MiB | Counted during 64-KiB member reads; the read is capped at the remaining budget plus one byte |
+| Actual aggregate uncompressed bytes | 1 GiB | Counted across member reads with the same bounded-read rule |
+
+An available `Content-Length` must be a nonnegative decimal integer, must not
+exceed the download limit, and must match the number of bytes actually read.
+An absent length is allowed; streaming still enforces the cap. A timeout,
+interrupted response, retryable HTTP status, invalid length, or non-retryable
+HTTP error does not produce a successful snapshot. The shared `urllib` client
+uses its configured socket timeout and follows its bounded standard-library
+redirect policy; a final URL outside HTTPS `fao.org` hosts is rejected. Two
+retries and exponential backoff from 0.5 seconds are the defaults.
+
+The compressed response is first written to a unique file-backed temporary
+location. ZIP members are read sequentially in bounded chunks without
+`extractall`, permanent extraction, or full-member buffering. Declared limits
+are preflight checks; actual byte counts are independently enforced while
+decompressing. No compression-ratio threshold is applied, avoiding rejection
+of legitimate highly-compressed CSV data. ZIP metadata and decompression
+libraries still consume process memory; these input limits are not a strict
+maximum on total Python memory. A complete temporary archive and a staging
+copy may coexist during publication, so up to roughly twice the configured
+compressed cap can be used temporarily in addition to retained snapshots.
+
+### ZIP security and integrity checks
+
+The validator requires a nonempty regular ZIP file with a readable central
+directory, the exact expected archive member set, and no encrypted members.
+Member paths must be flat, relative names; POSIX absolute paths, drive paths,
+backslashes, empty/dot/parent components, and names colliding after Unicode
+NFC normalization and case folding are rejected. Duplicate or ambiguous names,
+directory entries, symlinks, special file types, and compression methods other
+than stored/deflated are rejected. There are no extracted paths that can escape
+the validator's temporary area.
+
+Before reading, declared per-member and aggregate uncompressed sizes are
+checked. Then every regular member is streamed to completion. The reader counts
+actual decompressed bytes, compares them with declared lengths, and relies on
+the ZIP reader's CRC check at end-of-member. The manifest inventory records
+each member name, compressed/decompressed sizes, CRC value, validated byte
+count, and `crc_passed` result. Raw ZIP SHA-256 is computed by the HTTP
+transport and verified again while the binary publisher copies the file.
+
+These checks establish byte integrity and constrained ZIP readability, not
+source authenticity or statistical correctness. CRC32 is an accidental
+corruption check, not a cryptographic authenticity mechanism. Bronze does not
+parse every CSV row, validate FAOSTAT statistical flags, or assert that values
+are analytically correct. The original complete global archive remains the
+source of truth; Kenya filtering and analytical checks are deferred to Silver.
+
+### Immutable payload, identity, and manifest
+
+The ZIP is retained exactly as acquired under:
+
+```text
+data/
+├── bronze/faostat_producer_prices_normalized/publication=normalized/
+│   └── snapshots/<snapshot-id>/
+│       ├── Prices_E_All_Data_(Normalized).zip
+│       ├── descriptor.json
+│       └── manifest.json
+└── manifests/faostat_producer_prices_normalized/
+    ├── locks/publication=normalized.lock
+    └── runs/<run-id>.json
+```
+
+The source ID is `faostat_producer_prices_normalized`; `normalized` is a
+stable partition key for this single logical archive family, not a claimed
+upstream release date. Binary descriptor schema version 2 identifies content
+using canonical JSON containing the stable source ID, that partition key, raw
+ZIP SHA-256, and compressed byte size. The snapshot ID is `sha256-` followed
+by the SHA-256 of those canonical identity bytes. Retrieval time, run ID,
+temporary path, ETag, and source URL do not affect the ID. Identical archive
+bytes from the same logical dataset therefore reuse a snapshot, while changed
+bytes create a separate content-addressed version. No existing World Bank,
+KNBS, or profiling snapshot is migrated or rewritten.
+
+The schema-version-1 snapshot manifest includes the source/dataset/publisher
+and license attribution; archive filename, content type, size, and SHA-256;
+the complete ZIP member inventory; aggregate declared and validated
+uncompressed sizes; validation markers for structure, member safety, CRC and
+resource bounds; and the snapshot creation timestamp. No FAOSTAT release date
+is invented. When no reliable upstream release identifier is available, the
+content-derived snapshot ID tracks the locally observed version.
+
+The source-profiled files are preserved whole, including records for every
+area. Ingestion does not extract the CSV, filter observations to Kenya, rewrite
+ZIP metadata, normalize CSV cells, or create Parquet/database outputs.
+
+### Run records, idempotency, and recovery
+
+Every invocation writes an atomic append-only schema-version-1 run record to
+`data/manifests/faostat_producer_prices_normalized/runs/<uuid-hex>.json`. It
+records the run and UTC timestamps, approved request URL, HTTP status and
+retrieval time when available, source `Last-Modified`/ETag provenance,
+outcome, snapshot ID, archive byte count and SHA-256, member count, validation
+status, and bounded failure category/message. These HTTP validators do not
+affect content identity. The record contains no payload bytes or request
+headers.
+
+- `created`: a new complete archive passed ZIP/resource/CRC validation and was
+  atomically published.
+- `unchanged`: the content-derived snapshot already existed; its payload,
+  descriptor, manifest and inventory were verified and left unchanged.
+- `failed`: retrieval, archive validation, existing-snapshot integrity or
+  publication failed. A failed run never reports a successful outcome.
+
+The publisher copies and hashes the archive into a unique `.staging-` directory
+under the final snapshots parent, writes and verifies metadata, then atomically
+renames the complete directory into place. A per-archive advisory
+`fcntl.flock` serializes cooperating publishers. Interrupted publication
+staging is removed on the next publication attempt; an interrupted acquisition
+can leave only a unique temporary file/directory and cannot publish a
+snapshot. Identical concurrent runs converge on one snapshot; different
+revisions remain separate. Existing payload or metadata corruption raises an
+integrity failure and is never silently overwritten. A snapshot can exist if
+the subsequent run-record write fails; inspect both locations before retrying.
+As with the other Bronze publishers, advisory locks do not control unrelated
+writers and filesystem `fsync`/rename behavior depends on the local filesystem.
+
+FAOSTAT and its catalog generally identify CC BY 4.0, subject to FAO terms and
+possible third-party restrictions. Attribution and terms metadata are retained
+in the manifest, but this implementation does not claim that every archive
+component is unrestricted for redistribution. Check current dataset/source
+conditions before sharing stored archives.
+
 ## Non-goals and limitations
 
-- No FAOSTAT, RTFP, WFP, or NDMA Bronze ingestion.
+- No RTFP, WFP, or NDMA Bronze ingestion.
 - No transformation to analytical rows, Parquet, Silver, or warehouse tables.
 - No Airflow, Spark, Kafka, Docker, cloud storage, or database dependency.
 - No automatic deletion or overwrite policy for snapshots.

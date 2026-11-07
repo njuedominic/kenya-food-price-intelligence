@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 import time
 from dataclasses import dataclass
@@ -36,6 +37,10 @@ class HTTPRequestError(Exception):
 
 class HTTPResponseTooLarge(Exception):
     """A response exceeded the caller's configured size limit."""
+
+
+class HTTPResponseLengthMismatch(Exception):
+    """A streamed response did not match its declared Content-Length."""
 
 
 @dataclass(frozen=True)
@@ -164,11 +169,13 @@ class HTTPClient:
                 ) as response:
                     response_headers = dict(response.headers.items())
                     content_length = response.headers.get("Content-Length")
+                    declared_size: int | None = None
                     if content_length is not None:
-                        try:
-                            declared_size = int(content_length)
-                        except ValueError:
-                            declared_size = 0
+                        if re.fullmatch(r"[0-9]+", content_length.strip()) is None:
+                            raise HTTPResponseLengthMismatch(
+                                f"Response from {url} has an invalid Content-Length"
+                            )
+                        declared_size = int(content_length)
                         if declared_size > max_bytes:
                             raise HTTPResponseTooLarge(
                                 f"Response from {url} exceeds {max_bytes} bytes"
@@ -193,6 +200,11 @@ class HTTPClient:
                             digest.update(chunk)
                             temporary_file.write(chunk)
 
+                    if declared_size is not None and size_bytes != declared_size:
+                        raise HTTPResponseLengthMismatch(
+                            f"Response from {url} has {size_bytes} bytes but declared "
+                            f"{declared_size}"
+                        )
                     os.replace(temporary_path, output_path)
                     return HTTPDownloadResponse(
                         status=response.status,
@@ -207,6 +219,8 @@ class HTTPClient:
                     raise HTTPStatusError(error.code, url) from error
                 last_error = error
             except HTTPResponseTooLarge:
+                raise
+            except HTTPResponseLengthMismatch:
                 raise
             except (URLError, TimeoutError, OSError, HTTPException) as error:
                 last_error = error
