@@ -84,9 +84,9 @@ use `.env` and fail with a clear message if it is missing. See
 
 ## Source profiling
 
-The Milestone 2 source profilers inspect official source metadata and bounded
-samples; they are not production ingestion workflows. Install the project and
-its profiling dependencies from the repository root with:
+The source profilers inspect official source metadata and bounded samples;
+they are not production ingestion workflows. Install the project and its
+profiling dependencies from the repository root with:
 
 ```sh
 uv sync --locked --group dev
@@ -98,7 +98,7 @@ Git-ignored `data/landing/` directories.
 
 ### World Bank national CPI
 
-The Milestone 2 profiling utility fetches Kenya's `FP.CPI.TOTL` and
+The profiling utility fetches Kenya's `FP.CPI.TOTL` and
 `FP.CPI.TOTL.ZG` series from the World Bank Indicators API. It validates the
 two-element JSON envelope and every paginated observation, then writes aggregate
 statistics and observed field/type summaries (not raw observations) to
@@ -165,7 +165,7 @@ timeouts, retries, and local directories.
 
 ## World Bank Bronze ingestion
 
-The M3.1 command preserves the World Bank Indicators API response bytes as an
+The command preserves the World Bank Indicators API response bytes as an
 immutable local Bronze snapshot. It does not normalize observations, convert
 values, or require Docker. Python 3.12 and the repository's locked `uv`
 environment are required:
@@ -213,7 +213,7 @@ limitations are documented in
 
 ## KNBS monthly CPI Bronze ingestion
 
-The M3.2 command discovers one monthly CPI publication from the official
+The command discovers one monthly CPI publication from the official
 [KNBS CPI and inflation listing](https://www.knbs.or.ke/cpi-and-inflation-rates/),
 streams the original PDF bytes, validates the PDF structure, and publishes an
 immutable local Bronze snapshot. It does not extract statistical tables or
@@ -256,7 +256,7 @@ specified in
 
 ## FAOSTAT producer-price Bronze ingestion
 
-The M3.3 command streams the official FAOSTAT normalized Producer Prices ZIP,
+The command streams the official FAOSTAT normalized Producer Prices ZIP,
 validates its central directory and every member's safety, decompressed size,
 and CRC, then publishes the original ZIP bytes as an immutable local Bronze
 snapshot. The archive is global: ingestion preserves all areas and does not
